@@ -1,51 +1,127 @@
-import { BadRequestException, Controller, Get, Post, Body, Query, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, Param, Headers, HttpCode, Controller, Get, Post, Body, Query, Req, UseGuards, Inject } from '@nestjs/common';
+import { ApiBearerAuth, ApiHeader, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiJsonBody } from '../api-bodies.js';
+import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard.js';
-import { createUserSupabaseClient } from '../auth/user-supabase.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
+import { AccessService } from '../auth/access.service.js';
+import { uuid } from '../auth/validation.js';
+import { MongoService } from '../database/mongo.service.js';
+import { IntegrationService } from '../integration/integration.service.js';
+import { customerInput } from '../integration/validation.js';
+import { publicRecord } from '../database/models.js';
 
 @Controller('customers')
+@ApiTags('Customers')
+@ApiBearerAuth()
 @UseGuards(SupabaseAuthGuard)
 export class CustomersController {
+  constructor(@Inject(AccessService) private readonly access: AccessService,
+    @Inject(MongoService) private readonly mongo: MongoService,
+    @Inject(IntegrationService) private readonly integration: IntegrationService) {}
+
   @Get()
-  async list(@Req() request: AuthenticatedRequest, @Query('siteId') siteId?: string, @Query('search') search?: string) {
-    if (!request.user || !request.accessToken) throw new UnauthorizedException();
-    if (!siteId) throw new BadRequestException('Choose a site first');
-    const supabase = createUserSupabaseClient(request.accessToken);
-    let query = supabase.from('customers')
-      .select('id, first_name, last_name, email, phone, assigned_to, created_at, updated_at')
-      .eq('site_id', siteId).order('updated_at', { ascending: false }).limit(100);
-    const term = search?.trim().replace(/[,%()"\\]/g, ' ').replace(/\s+/g, ' ').slice(0, 60);
-    if (term) query = query.or(`first_name.ilike.%${term}%,last_name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`);
-    const { data, error } = await query;
-    if (error) throw new BadRequestException(error.message);
-    return { customers: data ?? [] };
+  @ApiQuery({ name: 'siteId', required: true, type: String, format: 'uuid' })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiPagination()
+  async list(@Req() request: AuthenticatedRequest, @Query('siteId') siteId?: string, @Query('search') search?: string, @Query('offset') offset?: string, @Query('limit') limit?: string) {
+    const id = uuid(siteId, 'siteId');
+    const site = await this.access.requireSite(request, id, 'customers.read');
+    if (search !== undefined && typeof search !== 'string') throw new BadRequestException('search must be text');
+    const term = search?.trim().slice(0, 60);
+    const escaped = term?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Shared customer identity is visible across the authorized site; tasks remain assigned-user scoped.
+    const page = pagination(offset, limit);
+    const customers = await this.mongo.customers.find({ ...this.integration.projectionFilter(), site_id: id, organisation_id: site.organisation_id,
+      ...(escaped ? { $or: ['first_name', 'last_name', 'email', 'phone'].map(field => ({ [field]: { $regex: escaped, $options: 'i' } })) } : {}),
+    }).sort({ updated_at: -1, id: 1 }).skip(page.offset).limit(page.limit + 1).toArray();
+    const result = pageResult(customers, page);
+    return { customers: result.rows.map(publicRecord), pagination: result.pagination, integration: this.integration.config.info() };
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get customer profile and linked follow-ups', description: 'Requires siteId and current customer read access. Returns customer contact/source/assignment, site metadata, assignee name, taskVisibility, follow-up permission, and integration label. offset/limit paginate linked follow-ups only. Default staff see own follow-ups; tasks.view_team permits team visibility. Unknown, other-site, or other-mode customer IDs return 404 after site authorization.' })
+  @ApiQuery({ name: 'siteId', required: true, type: String, format: 'uuid' })
+  @ApiPagination()
+  async detail(@Req() request: AuthenticatedRequest, @Param('id') id: string,
+    @Query('siteId') siteId?: string, @Query('offset') offset?: string, @Query('limit') limit?: string) {
+    uuid(id, 'customerId');
+    const targetSite = uuid(siteId, 'siteId');
+    const page = pagination(offset, limit);
+    // Site and mode are part of every lookup; guessing a customer ID cannot widen access.
+    return this.mongo.transaction(async session => {
+      const site = await this.access.requireSite(request, targetSite, 'customers.read', session);
+      const customer = await this.mongo.customers.findOne({ ...this.integration.projectionFilter(), id,
+        site_id: targetSite, organisation_id: site.organisation_id }, { session });
+      if (!customer) throw new NotFoundException('Customer is unavailable at this site');
+      const canReadTasks = await this.access.hasSitePermission(request, targetSite, 'tasks.read', session);
+      const viewTeam = canReadTasks && await this.access.hasSitePermission(request, targetSite, 'tasks.view_team', session);
+      const canCreateFollowUp = await this.access.hasSitePermission(request, targetSite, 'tasks.write', session);
+      const rows = canReadTasks ? await this.mongo.tasks.find({ ...this.integration.projectionFilter(), customer_id: id,
+        site_id: targetSite, organisation_id: site.organisation_id,
+        ...(viewTeam ? {} : { assigned_to: request.user!.id }) }, { session })
+        .sort({ completed_at: 1, due_at: 1, id: 1 }).skip(page.offset).limit(page.limit + 1).toArray() : [];
+      const result = pageResult(rows, page);
+      const membership = await this.mongo.memberships.findOne({ user_id: customer.assigned_to, organisation_id: site.organisation_id,
+        $or: [{ site_id: null, role: 'ADMIN' }, { site_id: targetSite, role: { $in: ['SALES', 'SERVICE'] } }] }, { session });
+      // Expose only a name for an assignee in this site/organisation, never staff credentials/contact details.
+      const profile = membership ? await this.mongo.users.findOne({ _id: customer.assigned_to }, { session, projection: { full_name: 1 } }) : null;
+      return { customer: publicRecord(customer), site: { id: site.id, organisation_id: site.organisation_id, name: site.name, timezone: site.timezone },
+        assignee: { id: customer.assigned_to, fullName: profile?.full_name ?? null },
+        tasks: result.rows.map(publicRecord), pagination: result.pagination,
+        taskVisibility: canReadTasks ? viewTeam ? 'team' : 'own' : 'none', permissions: { canCreateFollowUp },
+        integration: this.integration.config.info() };
+    });
+  }
+
+  @Get(':id/activity')
+  @ApiOperation({ summary: 'Read customer activity history', description: 'Paginated customer/source events and permitted follow-up events. Staff see own task events unless tasks.view_team is granted. Raw audit metadata and integration request bodies are not exposed.' })
+  @ApiQuery({ name: 'siteId', required: true, type: String, format: 'uuid' })
+  @ApiPagination()
+  async activity(@Req() request: AuthenticatedRequest, @Param('id') id: string,
+    @Query('siteId') siteId?: string, @Query('offset') offset?: string, @Query('limit') limit?: string) {
+    uuid(id, 'customerId');
+    const targetSite = uuid(siteId, 'siteId');
+    const page = pagination(offset, limit);
+    return this.mongo.transaction(async session => {
+      const site = await this.access.requireSite(request, targetSite, 'customers.read', session);
+      const customer = await this.mongo.customers.findOne({ ...this.integration.projectionFilter(), id, site_id: targetSite, organisation_id: site.organisation_id }, { session });
+      if (!customer) throw new NotFoundException('Customer is unavailable at this site');
+      const canReadTasks = await this.access.hasSitePermission(request, targetSite, 'tasks.read', session);
+      const viewTeam = canReadTasks && await this.access.hasSitePermission(request, targetSite, 'tasks.view_team', session);
+      const customerActions = ['customer.created', 'customer.source_imported', 'customer.source_updated'];
+      const taskActions = ['task.created', 'task.completed'];
+      const rows = await this.mongo.auditEvents.aggregate<import('../database/models.js').AuditEvent>([
+        { $match: { organisation_id: site.organisation_id, site_id: targetSite, $or: [
+          { entity_type: 'customer', entity_id: id, action: { $in: customerActions } },
+          ...(canReadTasks ? [{ entity_type: 'task', action: { $in: taskActions } }] : []),
+        ] } },
+        { $lookup: { from: 'tasks', let: { entity: '$entity_id' }, pipeline: [
+          { $match: { ...this.integration.projectionFilter(), site_id: targetSite, organisation_id: site.organisation_id, customer_id: id,
+            ...(viewTeam ? {} : { assigned_to: request.user!.id }), $expr: { $eq: ['$id', '$$entity'] } } },
+          { $project: { _id: 0, id: 1 } },
+        ], as: 'linked_task' } },
+        { $match: { $or: [{ entity_type: 'customer' }, ...(canReadTasks ? [{ 'linked_task.0': { $exists: true } }] : [])] } },
+        { $sort: { created_at: -1, id: 1 } }, { $skip: page.offset }, { $limit: page.limit + 1 },
+      ], { session }).toArray();
+      const result = pageResult(rows, page);
+      const names = await this.mongo.users.find({ _id: { $in: [...new Set(result.rows.map(event => event.actor_user_id))] } }, { session, projection: { full_name: 1 } }).toArray();
+      const labels: Record<string, string> = { 'customer.created': 'Customer creation confirmed', 'customer.source_imported': 'Customer imported from source', 'customer.source_updated': 'Customer refreshed from source', 'task.created': 'Follow-up created', 'task.completed': 'Follow-up completed' };
+      return { customerId: id, activities: result.rows.map(event => ({ id: event.id, type: event.action, summary: labels[event.action], occurredAt: event.created_at,
+        author: { id: event.actor_user_id, fullName: names.find(user => user._id === event.actor_user_id)?.full_name ?? null },
+        ...(event.entity_type === 'task' ? { taskId: event.entity_id } : {}),
+      })), pagination: result.pagination, taskVisibility: canReadTasks ? viewTeam ? 'team' : 'own' : 'none', integration: this.integration.config.info() };
+    });
   }
 
   @Post()
-  async create(@Req() request: AuthenticatedRequest, @Body() body: {
-    siteId?: string; firstName?: string; lastName?: string; email?: string; phone?: string;
+  @HttpCode(202)
+  @ApiHeader({ name: 'Idempotency-Key', required: true, description: '8–200 characters; reuse for retries of the identical request.' })
+  @ApiJsonBody('customer')
+  async create(@Req() request: AuthenticatedRequest, @Headers('idempotency-key') key: string | undefined, @Body() body: {
+    siteId?: unknown; firstName?: unknown; lastName?: unknown; email?: unknown; phone?: unknown;
   }) {
-    const user = request.user;
-    if (!user || !request.accessToken) throw new UnauthorizedException();
-    const siteId = body.siteId?.trim();
-    const firstName = body.firstName?.trim();
-    const lastName = body.lastName?.trim();
-    const email = body.email?.trim().toLowerCase() || null;
-    const phone = body.phone?.trim() || null;
-    if (!siteId || !firstName || !lastName) throw new BadRequestException('Site, first name, and last name are required');
-    if (firstName.length > 100 || lastName.length > 100 || (email && email.length > 254) || (phone && phone.length > 40)) {
-      throw new BadRequestException('One or more fields are too long');
-    }
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Enter a valid email address');
-    if (!email && !phone) throw new BadRequestException('Add an email address or phone number');
-
-    const supabase = createUserSupabaseClient(request.accessToken);
-    const { data, error } = await supabase.rpc('create_customer', {
-      p_site_id: siteId, p_first_name: firstName, p_last_name: lastName, p_email: email ?? '', p_phone: phone ?? '',
-    });
-    if (error) throw new BadRequestException(error.message);
-    const customer = data?.[0];
-    if (!customer) throw new BadRequestException('Customer could not be saved');
-    return { customer };
+    const siteId = uuid(body.siteId, 'siteId');
+    return this.integration.enqueueCustomer(request, siteId, customerInput(body), key);
   }
 }

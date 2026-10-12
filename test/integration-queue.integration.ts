@@ -1,0 +1,378 @@
+import { randomUUID } from 'node:crypto';
+import { Test } from '@nestjs/testing';
+import type { ExecutionContext, INestApplication } from '@nestjs/common';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import request from 'supertest';
+import { AppModule } from '../src/app.module.js';
+import { MongoService } from '../src/database/mongo.service.js';
+import { SupabaseAuthGuard } from '../src/auth/supabase-auth.guard.js';
+import { IntegrationConfig } from '../src/integration/integration.config.js';
+import { IntegrationService } from '../src/integration/integration.service.js';
+import { SimulatedAdapter } from '../src/integration/simulated.adapter.js';
+import type { SourceCustomer } from '../src/integration/contracts.js';
+
+describe('Durable integration and scraping runner against MongoDB', () => {
+  let replica: MongoMemoryReplSet;
+  let app: INestApplication;
+  let mongo: MongoService;
+  let integration: IntegrationService;
+  let config: IntegrationConfig;
+  const org = randomUUID();
+  const site = randomUUID();
+  const otherSite = randomUUID();
+  const admin = randomUUID();
+  const sales = randomUUID();
+  const other = randomUUID();
+  const salesMember = randomUUID();
+  const input = { siteId: site, firstName: 'Queued', lastName: 'Customer', email: 'queued@example.test' };
+  const api = (actor = admin) => ({
+    get: (path: string) => request(app.getHttpServer()).get('/api/' + path).set('Authorization', 'Bearer ' + actor),
+    post: (path: string, body: object = {}) => request(app.getHttpServer()).post('/api/' + path).set('Authorization', 'Bearer ' + actor).send(body),
+  });
+  const enqueue = (key = randomUUID(), actor = sales, body = input) => request(app.getHttpServer()).post('/api/customers').set('Authorization', 'Bearer ' + actor).set('Idempotency-Key', key).send(body);
+  const source = (external_id = 'source-123', extra: Partial<SourceCustomer> = {}): SourceCustomer => ({ external_id, revision: '1', observed_at: '2026-10-09T00:00:00.000Z', first_name: 'Queued', last_name: 'Customer', email: 'queued@example.test', phone: null, ...extra });
+  const scraping = () => { config.mode = 'scraping'; config.writesEnabled = true; };
+
+  beforeAll(async () => {
+    replica = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    vi.stubEnv('MONGODB_URI', replica.getUri());
+    vi.stubEnv('MONGODB_DATABASE', 'integration_queue_test');
+    vi.stubEnv('INTEGRATION_MODE', 'simulated');
+    vi.stubEnv('ALLOW_SIMULATED_INTEGRATION', 'true');
+    vi.stubEnv('INTEGRATION_WORKER_ENABLED', 'false');
+    const module = await Test.createTestingModule({ imports: [AppModule] }).overrideGuard(SupabaseAuthGuard).useValue({ canActivate: (context: ExecutionContext) => {
+      const req = context.switchToHttp().getRequest();
+      const id = req.headers.authorization?.replace('Bearer ', '');
+      if (![admin, sales, other].includes(id)) return false;
+      req.user = { id, email: 'test@example.test', email_confirmed_at: '2026-01-01' }; return true;
+    } }).compile();
+    app = module.createNestApplication(); app.setGlobalPrefix('api'); await app.init();
+    mongo = app.get(MongoService); integration = app.get(IntegrationService); config = app.get(IntegrationConfig);
+    const now = new Date().toISOString();
+    await mongo.organisations.insertOne({ _id: org, id: org, name: 'Queue Test Dealer', access_revision: 0, created_at: now });
+    for (const id of [site, otherSite]) await mongo.sites.insertOne({ _id: id, id, organisation_id: org, name: id, timezone: 'Australia/Sydney', created_at: now });
+    for (const [id, user, scope, role] of [[randomUUID(), admin, null, 'ADMIN'], [salesMember, sales, site, 'SALES'], [randomUUID(), other, otherSite, 'SALES']] as const) await mongo.memberships.insertOne({ _id: id, id, user_id: user, organisation_id: org, site_id: scope, role, status: 'active', extra_permissions: [], created_at: now });
+  });
+  beforeEach(async () => {
+    config.mode = 'simulated'; config.writesEnabled = true;
+    await Promise.all([mongo.commands.deleteMany({}), mongo.commandAttempts.deleteMany({}), mongo.simulatedRecords.deleteMany({}), mongo.simulatorBehaviors.deleteMany({}), mongo.customers.deleteMany({}), mongo.tasks.deleteMany({})]);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'active' } });
+  });
+  afterEach(() => vi.restoreAllMocks());
+  afterAll(async () => { await app?.close(); await replica?.stop(); vi.unstubAllEnvs(); });
+
+  it('queues without creating a customer, then projects confirmed source data and audits the attempt', async () => {
+    const queued = await enqueue().expect(202);
+    expect(queued.body.command.status).toBe('queued');
+    expect(queued.body.integration.simulated).toBe(true);
+    expect(await mongo.customers.countDocuments()).toBe(0);
+    const done = await api().post(`admin/integration/commands/${queued.body.command.id}/process`).expect(201);
+    expect(done.body.command.status).toBe('succeeded');
+    expect(done.body.customer.source).toBe('simulated');
+    await api().post(`admin/integration/commands/${queued.body.command.id}/process`).expect(201);
+    expect(await mongo.commandAttempts.countDocuments()).toBe(1);
+    expect(done.body.customer.external_ids).not.toHaveProperty('pentana');
+    const read = await api(sales).get(`integration/commands/${queued.body.command.id}`).expect(200);
+    expect(read.body.customer.id).toBe(done.body.customer.id);
+    const attempts = await api().get(`admin/integration/commands/${queued.body.command.id}/attempts`).expect(200);
+    expect(attempts.body.attempts[0].request.first_name).toBe('Queued');
+    expect(attempts.body.attempts[0].response.outcome).toBe('succeeded');
+    expect(await mongo.auditEvents.countDocuments({ entity_id: done.body.customer.id, action: 'customer.created' })).toBe(1);
+  });
+  it('deduplicates concurrent requests and rejects key reuse with different payload', async () => {
+    const key = randomUUID();
+    const [a, b] = await Promise.all([enqueue(key), enqueue(key)]);
+    expect([a.status, b.status]).toEqual([202, 202]);
+    expect(a.body.command.id).toBe(b.body.command.id);
+    expect(await mongo.commands.countDocuments()).toBe(1);
+    await enqueue(key, sales, { ...input, firstName: 'Different' }).expect(409);
+    await integration.processOne(a.body.command.id);
+    await enqueue(key).expect(202);
+    expect(await mongo.customers.countDocuments()).toBe(1);
+    expect(await mongo.simulatedRecords.countDocuments()).toBe(1);
+  });
+  it('requires an idempotency key, enforces sites, and limits visibility', async () => {
+    await api(sales).post('customers', input).expect(400);
+    await enqueue(randomUUID(), other).expect(403);
+    const queued = await enqueue().expect(202);
+    await api(other).get(`integration/commands/${queued.body.command.id}`).expect(403);
+    await api(sales).get(`admin/integration/commands?organisationId=${org}`).expect(403);
+    await api(sales).post(`admin/integration/commands/${queued.body.command.id}/process`).expect(403);
+    await api(sales).get(`admin/integration/commands/${queued.body.command.id}/attempts`).expect(403);
+  });
+  it('allows one claim and rejects stale leases and repeated result reports', async () => {
+    scraping();
+    const queued = await enqueue().expect(202);
+    const id = queued.body.command.id;
+    const claims = await Promise.all([api().post(`admin/integration/commands/${id}/claim`), api().post(`admin/integration/commands/${id}/claim`)]);
+    expect(claims.map(response => response.status).sort()).toEqual([200, 409]);
+    const lease = claims.find(response => response.status === 200)!.body.leaseToken;
+    await api(sales).post(`admin/integration/commands/${id}/heartbeat`, { leaseToken: lease }).expect(403);
+    await api().post(`admin/integration/commands/${id}/heartbeat`, { leaseToken: randomUUID() }).expect(409);
+    await api().post(`admin/integration/commands/${id}/heartbeat`, { leaseToken: lease }).expect(200);
+    const visible = await api(sales).get(`integration/commands/${id}`).expect(200);
+    expect(visible.body.command).not.toHaveProperty('lease_token');
+    await api().post(`admin/integration/commands/${id}/result`, { leaseToken: randomUUID(), outcome: 'succeeded', customer: source() }).expect(409);
+    const done = await api().post(`admin/integration/commands/${id}/result`, { leaseToken: lease, outcome: 'succeeded', customer: source() }).expect(200);
+    expect(done.body.customer.external_ids.pentana).toBe('source-123');
+    await api().post(`admin/integration/commands/${id}/result`, { leaseToken: lease, outcome: 'succeeded', customer: source() }).expect(409);
+    expect(await mongo.customers.countDocuments()).toBe(1);
+  });
+  it('keeps rejection visible without creating a customer or retrying it', async () => {
+    await api().post('admin/integration/simulator/behavior', { siteId: site, behavior: 'reject', count: 1 }).expect(201);
+    const queued = await enqueue().expect(202);
+    const result = await integration.processOne(queued.body.command.id);
+    expect(result!.command.status).toBe('rejected');
+    expect(result!.customer).toBeNull();
+    expect(await mongo.customers.countDocuments()).toBe(0);
+    await api().post(`admin/integration/commands/${queued.body.command.id}/retry`, { note: 'Try again' }).expect(409);
+  });
+  it('bounds retry attempts for definite non-application, preserves evidence, and allows admin recovery', async () => {
+    await api().post('admin/integration/simulator/behavior', { siteId: site, behavior: 'outage', count: 3 }).expect(201);
+    const queued = await enqueue().expect(202);
+    const id = queued.body.command.id;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await mongo.commands.updateOne({ id }, { $set: { available_at: new Date().toISOString() } });
+      const result = await integration.processOne(id);
+      expect(result!.command.status).toBe(attempt < 3 ? 'retry_wait' : 'failed');
+      expect(result!.command.attempts).toBe(attempt);
+    }
+    expect(await mongo.commandAttempts.countDocuments({ command_id: id })).toBe(3);
+    await api(sales).post(`admin/integration/commands/${id}/retry`, { note: 'Source restored' }).expect(403);
+    await api().post(`admin/integration/commands/${id}/retry`, { note: 'Source restored' }).expect(201);
+    const done = await integration.processOne(id);
+    expect(done!.command.status).toBe('succeeded');
+    expect(done!.command.attempts).toBe(4);
+  });
+  it('replays a durable simulator receipt after a crash between source write and projection', async () => {
+    const queued = await enqueue().expect(202);
+    const id = queued.body.command.id;
+    const command = await integration.claim(id);
+    const receipt = await app.get(SimulatedAdapter).execute(command!);
+    expect(receipt.outcome).toBe('succeeded');
+    expect(await mongo.customers.countDocuments()).toBe(0);
+    await mongo.commands.updateOne({ id }, { $set: { lease_expires_at: '2020-01-01T00:00:00.000Z' } });
+    expect((await integration.recoverExpired()).recovered).toBe(1);
+    const done = await integration.processOne(id);
+    expect(done!.command.status).toBe('succeeded');
+    expect(await mongo.simulatedRecords.countDocuments()).toBe(1);
+    expect(await mongo.customers.countDocuments()).toBe(1);
+  });
+  it('does not automatically retry ambiguous scraping writes; requires verified resolution', async () => {
+    scraping();
+    const queued = await enqueue().expect(202);
+    const id = queued.body.command.id;
+    const claim = await api().post(`admin/integration/commands/${id}/claim`).expect(200);
+    await mongo.commands.updateOne({ id }, { $set: { lease_expires_at: '2020-01-01T00:00:00.000Z' } });
+    await api().post(`admin/integration/commands/${id}/heartbeat`, { leaseToken: claim.body.leaseToken }).expect(409);
+    await api().post('admin/integration/recover', { organisationId: org }).expect(201);
+    const waiting = await api(sales).get(`integration/commands/${id}`).expect(200);
+    expect(waiting.body.command.status).toBe('needs_review');
+    await api().post(`admin/integration/commands/${id}/claim`).expect(409);
+    await api().post(`admin/integration/commands/${id}/retry`, { note: 'Unsure what happened' }).expect(400);
+    await api().post(`admin/integration/commands/${id}/result`, { leaseToken: claim.body.leaseToken, outcome: 'succeeded', customer: source() }).expect(409);
+    const resolved = await api().post(`admin/integration/commands/${id}/resolve`, { outcome: 'succeeded', customer: source(), note: 'Verified this exact customer in Pentana' }).expect(201);
+    expect(resolved.body.command.status).toBe('succeeded');
+    const attempt = await mongo.commandAttempts.findOne({ command_id: id });
+    expect(attempt!.response!.outcome).toBe('unknown');
+    expect(attempt!.resolution!.response.outcome).toBe('succeeded');
+  });
+  it('requires explicit confirmation to retry an unknown outcome', async () => {
+    await api().post('admin/integration/simulator/behavior', { siteId: site, behavior: 'unknown', count: 1 }).expect(201);
+    const queued = await enqueue().expect(202);
+    await integration.processOne(queued.body.command.id);
+    await api().post(`admin/integration/commands/${queued.body.command.id}/retry`, { note: 'Confirmed absent', confirmedNotApplied: 'true' }).expect(400);
+    await api().post(`admin/integration/commands/${queued.body.command.id}/retry`, { note: 'Confirmed absent in source', confirmedNotApplied: true }).expect(201);
+    const result = await integration.processOne(queued.body.command.id);
+    expect(result!.command.status).toBe('succeeded');
+  });
+  it('rejects revoked authority before source execution', async () => {
+    const queued = await enqueue().expect(202);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    expect(await integration.processOne(queued.body.command.id)).toBeNull();
+    expect((await mongo.commands.findOne({ id: queued.body.command.id }))!.status).toBe('rejected');
+    expect(await mongo.simulatedRecords.countDocuments()).toBe(0);
+  });
+  it('imports idempotently, rejects stale/cross-site/conflicting snapshots, and preserves assignment', async () => {
+    scraping();
+    await api(sales).post('admin/integration/customers/import', { siteId: site, customers: [source()] }).expect(403);
+    const first = await api().post('admin/integration/customers/import', { siteId: site, customers: [source()] }).expect(201);
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source()] }).expect(201);
+    expect(await mongo.customers.countDocuments()).toBe(1);
+    await mongo.customers.updateOne({ id: first.body.customers[0].id }, { $set: { assigned_to: sales } });
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source('source-123', { first_name: 'Stale', observed_at: '2020-01-01T00:00:00Z' })] }).expect(201);
+    expect((await mongo.customers.findOne({ id: first.body.customers[0].id }))!.first_name).toBe('Queued');
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source('source-123', { first_name: 'Conflict' })] }).expect(409);
+    await api().post('admin/integration/customers/import', { siteId: otherSite, customers: [source('new-id'), source()] }).expect(409);
+    expect(await mongo.customers.countDocuments()).toBe(1);
+    const updated = await api().post('admin/integration/customers/import', { siteId: site, customers: [source('source-123', { revision: '2', observed_at: '2026-10-10T00:00:00Z' })] }).expect(201);
+    expect(updated.body.customers[0].assigned_to).toBe(sales);
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source(), source()] }).expect(400);
+  });
+  it('synchronizes labelled fixtures repeatedly without duplicate projections', async () => {
+    await api().post('admin/integration/simulator/sync', { siteId: site }).expect(201);
+    await api().post('admin/integration/simulator/sync', { siteId: site }).expect(201);
+    expect(await mongo.customers.countDocuments()).toBe(2);
+    expect(await mongo.customers.countDocuments({ 'external_ids.pentana': { $exists: true } })).toBe(0);
+  });
+  it('prevents simulation records and linked tasks leaking into scraping mode', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    await api(sales).post('tasks', { siteId: site, customerId: done!.customer!.id, title: 'Simulated follow-up', dueAt: '2026-01-01' }).expect(201);
+    scraping();
+    expect((await api(sales).get(`customers?siteId=${site}`).expect(200)).body.customers).toEqual([]);
+    expect((await api(sales).get(`tasks?siteId=${site}&through=2099-01-01`).expect(200)).body.tasks).toEqual([]);
+    await api(sales).post('tasks', { siteId: site, customerId: done!.customer!.id, title: 'Wrong mode', dueAt: '2026-01-01' }).expect(400);
+    await api().post(`admin/integration/commands/${queued.body.command.id}/process`).expect(400);
+    expect((await api(sales).get(`integration/commands/${queued.body.command.id}`).expect(200)).body.customer).toBeNull();
+  });
+  it('does not project mismatched source responses or hide unknown adapter exceptions', async () => {
+    scraping();
+    const queued = await enqueue().expect(202);
+    const claim = await api().post(`admin/integration/commands/${queued.body.command.id}/claim`).expect(200);
+    const result = await api().post(`admin/integration/commands/${queued.body.command.id}/result`, { leaseToken: claim.body.leaseToken, outcome: 'succeeded', customer: source('wrong', { email: 'different@example.test' }) }).expect(200);
+    expect(result.body.command.status).toBe('needs_review');
+    expect(await mongo.customers.countDocuments()).toBe(0);
+    config.mode = 'simulated';
+    const second = await enqueue().expect(202);
+    vi.spyOn(app.get(SimulatedAdapter), 'execute').mockRejectedValueOnce(new Error('secret diagnostic should not leak'));
+    const failed = await integration.processOne(second.body.command.id);
+    expect(failed!.command.status).toBe('needs_review');
+    expect(JSON.stringify(failed)).not.toContain('secret diagnostic');
+  });
+  it('returns customer profile context and keeps linked follow-ups owner-scoped', async () => {
+    const queued = await enqueue().expect(202);
+    const confirmed = await integration.processOne(queued.body.command.id);
+    const customerId = confirmed!.customer!.id;
+    await mongo.users.updateOne({ _id: sales }, { $set: { email: 'private-staff@example.test', full_name: 'Sales Person', updated_at: new Date().toISOString() } }, { upsert: true });
+    await api(sales).post('tasks', { siteId: site, customerId, title: 'Personal follow-up', dueAt: '2026-01-01' }).expect(201);
+    await api().post('tasks', { siteId: site, customerId, title: 'Administrator follow-up', dueAt: '2026-01-01' }).expect(201);
+    const detail = await api(sales).get(`customers/${customerId}?siteId=${site}`).expect(200);
+    expect(detail.body.customer.id).toBe(customerId);
+    expect(detail.body.customer).not.toHaveProperty('_id');
+    expect(detail.body.site.id).toBe(site);
+    expect(detail.body.assignee).toEqual({ id: sales, fullName: 'Sales Person' });
+    expect(JSON.stringify(detail.body)).not.toContain('private-staff@example.test');
+    expect(detail.body.tasks.map((task: { title: string }) => task.title)).toEqual(['Personal follow-up']);
+    expect(detail.body.taskVisibility).toBe('own');
+    expect(detail.body.permissions.canCreateFollowUp).toBe(true);
+    const team = await api().get(`customers/${customerId}?siteId=${site}&limit=1`).expect(200);
+    expect(team.body.taskVisibility).toBe('team');
+    expect(team.body.pagination.hasMore).toBe(true);
+    const next = await api().get(`customers/${customerId}?siteId=${site}&limit=1&offset=1`).expect(200);
+    expect(next.body.tasks[0].id).not.toBe(team.body.tasks[0].id);
+    await api(sales).get(`customers/${customerId}?siteId=${site}&limit=0`).expect(400);
+  });
+  it('denies customer detail across sites, modes, unknown IDs, and suspended memberships', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    const id = done!.customer!.id;
+    await api(other).get(`customers/${id}?siteId=${site}`).expect(403);
+    await api(other).get(`customers/${id}?siteId=${otherSite}`).expect(404);
+    await api().get(`customers/${id}?siteId=${otherSite}`).expect(404);
+    await api(sales).get(`customers/${randomUUID()}?siteId=${site}`).expect(404);
+    scraping();
+    await api(sales).get(`customers/${id}?siteId=${site}`).expect(404);
+    config.mode = 'simulated';
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    await api(sales).get(`customers/${id}?siteId=${site}`).expect(403);
+  });
+
+  it('returns paginated activity without leaking team task events or raw audit metadata', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    const customerId = done!.customer!.id;
+    const own = await api(sales).post('tasks', { siteId: site, customerId, title: 'Own task', dueAt: '2026-01-01' }).expect(201);
+    const team = await api().post('tasks', { siteId: site, customerId, title: 'Private team task', dueAt: '2026-01-01' }).expect(201);
+    await request(app.getHttpServer()).patch('/api/tasks/' + own.body.task.id + '/complete?siteId=' + site).set('Authorization', 'Bearer ' + sales).expect(200);
+    await mongo.users.updateOne({ _id: sales }, { $set: { email: 'private-staff@example.test', full_name: 'Sales Staff', updated_at: new Date().toISOString() } }, { upsert: true });
+    await mongo.auditEvents.updateMany({ entity_id: customerId }, { $set: { metadata: { privateDiagnostic: 'DO_NOT_EXPOSE' } } });
+    const staff = await api(sales).get('customers/' + customerId + '/activity?siteId=' + site).expect(200);
+    expect(staff.body.activities.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining(['customer.created', 'task.created', 'task.completed']));
+    expect(staff.body.activities.some((event: { taskId?: string }) => event.taskId === team.body.task.id)).toBe(false);
+    expect(staff.body.activities.find((event: { type: string }) => event.type === 'task.created').author.fullName).toBe('Sales Staff');
+    expect(JSON.stringify(staff.body)).not.toContain('DO_NOT_EXPOSE');
+    expect(JSON.stringify(staff.body)).not.toContain('private-staff@example.test');
+    const administrator = await api().get('customers/' + customerId + '/activity?siteId=' + site).expect(200);
+    expect(administrator.body.activities.some((event: { taskId?: string }) => event.taskId === team.body.task.id)).toBe(true);
+    const first = await api().get('customers/' + customerId + '/activity?siteId=' + site + '&limit=1').expect(200);
+    const second = await api().get('customers/' + customerId + '/activity?siteId=' + site + '&limit=1&offset=1').expect(200);
+    expect(first.body.pagination.nextOffset).toBe(1);
+    expect(first.body.activities[0].id).not.toBe(second.body.activities[0].id);
+    await api(other).get('customers/' + customerId + '/activity?siteId=' + site).expect(403);
+    await api(sales).get('customers/' + customerId + '/activity?siteId=' + site + '&limit=0').expect(400);
+    await api(sales).get('customers/' + randomUUID() + '/activity?siteId=' + site).expect(404);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    await api(sales).get('customers/' + customerId + '/activity?siteId=' + site).expect(403);
+  });
+
+  it('records source imports and meaningful refreshes atomically without duplicate history', async () => {
+    scraping();
+    const imported = await api().post('admin/integration/customers/import', { siteId: site, customers: [source()] }).expect(201);
+    const customerId = imported.body.customers[0].id;
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source()] }).expect(201);
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source('source-123', { revision: '2', first_name: 'Updated', observed_at: '2026-10-10T00:00:00Z' })] }).expect(201);
+    await api().post('admin/integration/customers/import', { siteId: site, customers: [source('will-rollback'), source('source-123', { revision: '3', observed_at: '2026-10-10T00:00:00Z' })] }).expect(409);
+    expect(await mongo.auditEvents.countDocuments({ action: 'customer.source_imported', entity_id: { $ne: customerId }, created_at: { $gte: imported.body.customers[0].created_at } })).toBe(0);
+    const history = await api(sales).get('customers/' + customerId + '/activity?siteId=' + site).expect(200);
+    expect(history.body.activities.map((event: { type: string }) => event.type)).toEqual(['customer.source_updated', 'customer.source_imported']);
+    config.mode = 'simulated';
+    await api(sales).get('customers/' + customerId + '/activity?siteId=' + site).expect(404);
+  });
+
+  it('aggregates site-local open work with exact boundaries, ownership, and full counts before pagination', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    const customerId = done!.customer!.id;
+    const add = async (actor: string, dueAt: string, kind = 'follow_up') => (await api(actor).post('tasks', { siteId: site, customerId, title: 'My Day task', dueAt, kind }).expect(201)).body.task;
+    const overdue = await add(sales, '2026-10-11T12:59:59Z');
+    const today = await add(sales, '2026-10-11T13:00:00Z');
+    const call = await add(sales, '2026-10-12T12:59:59Z', 'call');
+    await add(sales, '2026-10-12T13:00:00Z');
+    const completed = await add(sales, '2026-10-12T10:00:00Z');
+    await mongo.tasks.updateOne({ id: completed.id }, { $set: { completed_at: new Date().toISOString() } });
+    const cancelled = await add(sales, '2026-10-12T10:00:00Z');
+    await mongo.tasks.updateOne({ id: cancelled.id }, { $set: { cancelled_at: new Date().toISOString() } });
+    const teamTask = await add(admin, '2026-10-12T10:00:00Z');
+    const response = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&limit=1').expect(200);
+    expect(response.body.day.startsAt).toBe('2026-10-11T13:00:00.000Z');
+    expect(response.body.totals).toEqual({ all: 3, overdue: 1, today: 2, scheduledCalls: 1 });
+    expect(response.body.items[0].id).toBe(overdue.id);
+    expect(response.body.items[0].customer.id).toBe(customerId);
+    expect(response.body.pagination.hasMore).toBe(true);
+    const todays = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&bucket=today').expect(200);
+    expect(todays.body.items.map((task: { id: string }) => task.id)).toEqual([today.id, call.id]);
+    const calls = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&bucket=calls').expect(200);
+    expect(calls.body.items.map((task: { id: string }) => task.id)).toEqual([call.id]);
+    expect(calls.body.totals.all).toBe(3);
+    await api(sales).get('my-day?siteId=' + site + '&view=team').expect(403);
+    const team = await api().get('my-day?siteId=' + site + '&date=2026-10-12&view=team').expect(200);
+    expect(team.body.totals.all).toBe(4);
+    expect(team.body.items.some((task: { id: string }) => task.id === teamTask.id)).toBe(true);
+    const personalAdmin = await api().get('my-day?siteId=' + site + '&date=2026-10-12').expect(200);
+    expect(personalAdmin.body.totals.all).toBe(1);
+    await api(other).get('my-day?siteId=' + site).expect(403);
+    await api(sales).get('my-day?siteId=' + site + '&date=2026-02-30').expect(400);
+    await api(sales).get('my-day?siteId=' + site + '&bucket=unknown').expect(400);
+    await api(sales).get('my-day?siteId=' + site + '&view=unknown').expect(400);
+    await api(sales).get('my-day?siteId=' + site + '&limit=101').expect(400);
+    await api(sales).post('tasks', { siteId: site, customerId, title: 'Invalid kind', dueAt: '2026-10-12', kind: 'email' }).expect(400);
+    scraping();
+    const isolated = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12').expect(200);
+    expect(isolated.body.items).toEqual([]);
+    expect(isolated.body.totals.all).toBe(0);
+    config.mode = 'simulated';
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    await api(sales).get('my-day?siteId=' + site).expect(403);
+  });
+
+  it('disables writes unless explicitly enabled and never falls back to simulation', async () => {
+    config.mode = 'disabled'; config.writesEnabled = false;
+    await enqueue().expect(503);
+    expect(await mongo.commands.countDocuments()).toBe(0);
+    config.mode = 'scraping';
+    await enqueue().expect(503);
+    expect((await api(sales).get('integration/status').expect(200)).body.simulated).toBe(false);
+    await api().post('admin/integration/simulator/sync', { siteId: site }).expect(400);
+  });
+});
