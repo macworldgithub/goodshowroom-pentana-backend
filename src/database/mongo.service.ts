@@ -1,6 +1,6 @@
 import { ConflictException, HttpException, Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { MongoClient, MongoServerError, type ClientSession, type Db } from 'mongodb';
-import type { AuditEvent, Brand, Customer, Invitation, Membership, Organisation, Site, Task } from './models.js';
+import type { AuditEvent, Brand, Customer, CustomerJournal, Invitation, Membership, Organisation, Site, Task } from './models.js';
 import type { Attempt, Command, SimulatedRecord, SimulatorBehavior } from '../integration/contracts.js';
 
 @Injectable()
@@ -29,6 +29,7 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get invitations() { return this.database.collection<Invitation>('staff_invitations'); }
   get customers() { return this.database.collection<Customer>('customers'); }
   get tasks() { return this.database.collection<Task>('tasks'); }
+  get customerJournal() { return this.database.collection<CustomerJournal>('customer_journal'); }
   get commands() { return this.database.collection<Command>('integration_commands'); }
   get commandAttempts() { return this.database.collection<Attempt>('integration_attempts'); }
   get simulatedRecords() { return this.database.collection<SimulatedRecord>('simulated_source_records'); }
@@ -51,6 +52,8 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
       unique: true, partialFilterExpression: { 'external_ids.pentana': { $type: 'string' } },
     });
     await this.tasks.createIndex({ site_id: 1, assigned_to: 1, due_at: 1 });
+    await this.customerJournal.createIndex({ organisation_id: 1, created_by: 1, idempotency_key: 1 }, { unique: true });
+    await this.customerJournal.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, occurred_at: -1, id: 1 });
     await this.tasks.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, assigned_to: 1 });
     await this.commands.createIndex({ organisation_id: 1, actor_user_id: 1, idempotency_key: 1 }, { unique: true });
     await this.commands.createIndex({ mode: 1, status: 1, available_at: 1 });

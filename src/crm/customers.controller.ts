@@ -89,9 +89,9 @@ export class CustomersController {
       if (!customer) throw new NotFoundException('Customer is unavailable at this site');
       const canReadTasks = await this.access.hasSitePermission(request, targetSite, 'tasks.read', session);
       const viewTeam = canReadTasks && await this.access.hasSitePermission(request, targetSite, 'tasks.view_team', session);
-      const customerActions = ['customer.created', 'customer.source_imported', 'customer.source_updated'];
+      const customerActions = ['customer.created', 'customer.source_imported', 'customer.source_updated', 'customer.note_added', 'customer.call_logged'];
       const taskActions = ['task.created', 'task.completed'];
-      const rows = await this.mongo.auditEvents.aggregate<import('../database/models.js').AuditEvent>([
+      const rows = await this.mongo.auditEvents.aggregate<import('../database/models.js').AuditEvent & { journal: import('../database/models.js').CustomerJournal[]; activity_at: string }>([
         { $match: { organisation_id: site.organisation_id, site_id: targetSite, $or: [
           { entity_type: 'customer', entity_id: id, action: { $in: customerActions } },
           ...(canReadTasks ? [{ entity_type: 'task', action: { $in: taskActions } }] : []),
@@ -102,14 +102,22 @@ export class CustomersController {
           { $project: { _id: 0, id: 1 } },
         ], as: 'linked_task' } },
         { $match: { $or: [{ entity_type: 'customer' }, ...(canReadTasks ? [{ 'linked_task.0': { $exists: true } }] : [])] } },
-        { $sort: { created_at: -1, id: 1 } }, { $skip: page.offset }, { $limit: page.limit + 1 },
+        { $lookup: { from: 'customer_journal', let: { journalId: '$metadata.journal_id' }, pipeline: [
+          { $match: { ...this.integration.projectionFilter(), organisation_id: site.organisation_id, site_id: targetSite, customer_id: id,
+            $expr: { $eq: ['$id', '$$journalId'] } } },
+        ], as: 'journal' } },
+        { $match: { $or: [{ action: { $nin: ['customer.note_added', 'customer.call_logged'] } }, { 'journal.0': { $exists: true } }] } },
+        { $addFields: { activity_at: { $ifNull: [{ $arrayElemAt: ['$journal.occurred_at', 0] }, '$created_at'] } } },
+        { $sort: { activity_at: -1, id: 1 } }, { $skip: page.offset }, { $limit: page.limit + 1 },
       ], { session }).toArray();
       const result = pageResult(rows, page);
       const names = await this.mongo.users.find({ _id: { $in: [...new Set(result.rows.map(event => event.actor_user_id))] } }, { session, projection: { full_name: 1 } }).toArray();
-      const labels: Record<string, string> = { 'customer.created': 'Customer creation confirmed', 'customer.source_imported': 'Customer imported from source', 'customer.source_updated': 'Customer refreshed from source', 'task.created': 'Follow-up created', 'task.completed': 'Follow-up completed' };
-      return { customerId: id, activities: result.rows.map(event => ({ id: event.id, type: event.action, summary: labels[event.action], occurredAt: event.created_at,
+      const labels: Record<string, string> = { 'customer.created': 'Customer creation confirmed', 'customer.source_imported': 'Customer imported from source', 'customer.source_updated': 'Customer refreshed from source', 'task.created': 'Follow-up created', 'task.completed': 'Follow-up completed', 'customer.note_added': 'Internal note added', 'customer.call_logged': 'Customer call logged' };
+      return { customerId: id, activities: result.rows.map(event => ({ id: event.id, type: event.action, summary: labels[event.action], occurredAt: event.activity_at, recordedAt: event.created_at,
         author: { id: event.actor_user_id, fullName: names.find(user => user._id === event.actor_user_id)?.full_name ?? null },
         ...(event.entity_type === 'task' ? { taskId: event.entity_id } : {}),
+        ...(event.journal[0] ? { journal: { id: event.journal[0].id, kind: event.journal[0].kind, text: event.journal[0].text,
+          ...(event.journal[0].kind === 'call' ? { direction: event.journal[0].direction, outcome: event.journal[0].outcome } : {}) } } : {}),
       })), pagination: result.pagination, taskVisibility: canReadTasks ? viewTeam ? 'team' : 'own' : 'none', integration: this.integration.config.info() };
     });
   }

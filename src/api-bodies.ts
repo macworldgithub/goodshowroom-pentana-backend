@@ -17,6 +17,15 @@ const normalizedCustomer: SchemaObject = { type: 'object', required: ['external_
 } };
 const resultProperties: Record<string, SchemaObject> = { outcome: { type: 'string', enum: ['succeeded', 'rejected', 'not_applied', 'unknown'] }, customer: normalizedCustomer, code: { type: 'string', maxLength: 100 }, message: { type: 'string', maxLength: 1000 } };
 const bodies: Record<string, SchemaObject> = {
+  customerNote: { type: 'object', required: ['siteId', 'text'], properties: { siteId: site, text: { type: 'string', minLength: 1, maxLength: 5000, example: 'Customer prefers a callback tomorrow morning.' } } },
+  customerCall: { type: 'object', required: ['siteId', 'summary', 'direction', 'outcome'], properties: {
+    siteId: site, summary: { type: 'string', minLength: 1, maxLength: 5000, example: 'Discussed options; promised a callback.' },
+    direction: { type: 'string', enum: ['incoming', 'outgoing'] }, outcome: { type: 'string', enum: ['connected', 'no_answer', 'voicemail', 'busy', 'wrong_number'] },
+    occurredAt: { type: 'string', format: 'date-time', description: 'Optional actual call time; defaults to now. Future timestamps above 60 seconds tolerance are rejected.' },
+    followUp: { type: 'object', nullable: true, required: ['title', 'dueAt'], description: 'Optional promised callback, assigned to the recorder. Created atomically with the call log; repeated keys do not duplicate it.', properties: {
+      title: { type: 'string', minLength: 2, maxLength: 180, example: 'Promised callback' }, dueAt: { type: 'string', format: 'date-time' }, priority: { type: 'string', enum: ['low', 'normal', 'high'], default: 'normal' },
+    } },
+  } },
   integrationEmpty: { type: 'object', properties: {} },
   integrationLease: { type: 'object', required: ['leaseToken'], properties: { leaseToken: identifier } },
   integrationSite: { type: 'object', required: ['siteId'], properties: { siteId: site } },

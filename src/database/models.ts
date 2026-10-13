@@ -35,6 +35,14 @@ export type AuditEvent = RecordBase & {
   action: string; entity_type: string; entity_id: string; metadata: Record<string, unknown>;
 };
 
+export type CallOutcome = 'connected' | 'no_answer' | 'voicemail' | 'busy' | 'wrong_number';
+export type CustomerJournal = RecordBase & {
+  organisation_id: string; site_id: string; customer_id: string; created_by: string;
+  kind: 'note' | 'call'; text: string; occurred_at: string;
+  direction?: 'incoming' | 'outgoing'; outcome?: CallOutcome; follow_up_task_id?: string;
+  integration_mode?: 'simulated' | 'scraping'; idempotency_key: string; request_hash: string;
+};
+
 export function publicRecord<T extends { _id: string }>(record: T): Omit<T, '_id'> {
   const { _id, ...result } = record;
   return result;

@@ -55,7 +55,7 @@ describe('Durable integration and scraping runner against MongoDB', () => {
   });
   beforeEach(async () => {
     config.mode = 'simulated'; config.writesEnabled = true;
-    await Promise.all([mongo.commands.deleteMany({}), mongo.commandAttempts.deleteMany({}), mongo.simulatedRecords.deleteMany({}), mongo.simulatorBehaviors.deleteMany({}), mongo.customers.deleteMany({}), mongo.tasks.deleteMany({})]);
+    await Promise.all([mongo.commands.deleteMany({}), mongo.commandAttempts.deleteMany({}), mongo.simulatedRecords.deleteMany({}), mongo.simulatorBehaviors.deleteMany({}), mongo.customers.deleteMany({}), mongo.tasks.deleteMany({}), mongo.customerJournal.deleteMany({})]);
     await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'active', extra_permissions: [] } });
   });
   afterEach(() => vi.restoreAllMocks());
@@ -377,6 +377,79 @@ describe('Durable integration and scraping runner against MongoDB', () => {
     config.mode = 'simulated';
     await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
     await api(sales).get('my-day?siteId=' + site).expect(403);
+  });
+
+  it('shares internal notes and call logs, deduplicates concurrent calls, and creates one promised callback', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    const customerId = done!.customer!.id;
+    const write = (path: string, key: string, body: object, actor = sales) => api(actor).post('customers/' + customerId + '/' + path, body).set('Idempotency-Key', key);
+    const noteKey = randomUUID();
+    const note = await write('notes', noteKey, { siteId: site, text: 'Prefers morning contact' }).expect(201);
+    const repeat = await write('notes', noteKey, { siteId: site, text: 'Prefers morning contact' }).expect(201);
+    expect(repeat.body.entry.id).toBe(note.body.entry.id);
+    expect(repeat.body.replayed).toBe(true);
+    await write('notes', noteKey, { siteId: site, text: 'Different content' }).expect(409);
+    const callKey = randomUUID();
+    const body = { siteId: site, summary: 'Discussed choices, promised callback', direction: 'outgoing', outcome: 'connected', followUp: { title: 'Promised callback', dueAt: new Date().toISOString() } };
+    const [first, second] = await Promise.all([write('calls', callKey, body), write('calls', callKey, body)]);
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect(first.body.entry.id).toBe(second.body.entry.id);
+    expect(first.body.followUp.id).toBe(second.body.followUp.id);
+    expect(first.body.followUp.assigned_to).toBe(sales);
+    expect(first.body.followUp.kind).toBe('call');
+    expect(await mongo.customerJournal.countDocuments()).toBe(2);
+    expect(await mongo.tasks.countDocuments()).toBe(1);
+    const peerEntry = await write('calls', randomUUID(), { siteId: site, summary: 'Admin recorded attempt', direction: 'incoming', outcome: 'no_answer', occurredAt: '2026-01-01T00:00:00Z', followUp: { title: 'Admin-only callback', dueAt: new Date().toISOString() } }, admin).expect(201);
+    const journal = await api(sales).get('customers/' + customerId + '/journal?siteId=' + site).expect(200);
+    expect(journal.body.entries).toHaveLength(3);
+    expect(journal.body.entries.find((entry: { id: string }) => entry.id === peerEntry.body.entry.id)).not.toHaveProperty('follow_up_task_id');
+    expect(journal.body.entries.find((entry: { id: string }) => entry.id === first.body.entry.id).follow_up_task_id).toBe(first.body.followUp.id);
+    expect(JSON.stringify(journal.body)).not.toContain(noteKey);
+    expect(journal.body.entries.every((entry: object) => !('request_hash' in entry))).toBe(true);
+    const page = await api(sales).get('customers/' + customerId + '/journal?siteId=' + site + '&limit=1').expect(200);
+    expect(page.body.pagination.hasMore).toBe(true);
+    const timeline = await api(sales).get('customers/' + customerId + '/activity?siteId=' + site).expect(200);
+    expect(timeline.body.activities.find((event: { type: string }) => event.type === 'customer.note_added').journal.text).toBe('Prefers morning contact');
+    const historical = timeline.body.activities.find((event: { journal?: { id: string } }) => event.journal?.id === peerEntry.body.entry.id);
+    expect(historical.occurredAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(historical.journal).not.toHaveProperty('follow_up_task_id');
+    const day = await api(sales).get('my-day?siteId=' + site + '&bucket=calls').expect(200);
+    expect(day.body.items.some((task: { id: string }) => task.id === first.body.followUp.id)).toBe(true);
+  });
+
+  it('validates note/call inputs, isolates modes/sites, and rejects suspended access', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    const id = done!.customer!.id;
+    const callPath = 'customers/' + id + '/calls';
+    await api(sales).post('customers/' + id + '/notes', { siteId: site, text: 'Missing key' }).expect(400);
+    await api(sales).post('customers/' + id + '/notes', { siteId: site, text: ' ' }).set('Idempotency-Key', randomUUID()).expect(400);
+    await api(sales).post(callPath, { siteId: site, summary: 'Attempt', direction: 'outgoing', outcome: 'invalid' }).set('Idempotency-Key', randomUUID()).expect(400);
+    await api(sales).post(callPath, { siteId: site, summary: 'Attempt', direction: 'outgoing', outcome: 'connected', occurredAt: '2099-01-01', followUp: { title: 'Callback', dueAt: 'bad' } }).set('Idempotency-Key', randomUUID()).expect(400);
+    await api(sales).post(callPath, { siteId: site, summary: 'Attempt', direction: 'outgoing', outcome: 'connected', followUp: { title: 'Callback', dueAt: 'bad' } }).set('Idempotency-Key', randomUUID()).expect(400);
+    expect(await mongo.customerJournal.countDocuments()).toBe(0);
+    expect(await mongo.tasks.countDocuments()).toBe(0);
+    await api(other).post('customers/' + id + '/notes', { siteId: site, text: 'Forbidden' }).set('Idempotency-Key', randomUUID()).expect(403);
+    await api(other).get('customers/' + id + '/journal?siteId=' + site).expect(403);
+    await api().post('customers/' + id + '/notes', { siteId: otherSite, text: 'Wrong site' }).set('Idempotency-Key', randomUUID()).expect(404);
+    await api(sales).get('customers/' + id + '/journal?siteId=' + site + '&limit=0').expect(400);
+    scraping();
+    await api(sales).post('customers/' + id + '/notes', { siteId: site, text: 'Wrong mode' }).set('Idempotency-Key', randomUUID()).expect(404);
+    await api(sales).get('customers/' + id + '/journal?siteId=' + site).expect(404);
+    config.mode = 'simulated';
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    await api(sales).post('customers/' + id + '/notes', { siteId: site, text: 'Suspended' }).set('Idempotency-Key', randomUUID()).expect(403);
+  });
+
+  it('rolls back call logs and promised tasks if audit recording fails', async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    const { AuditService } = await import('../src/database/audit.service.js');
+    vi.spyOn(app.get(AuditService), 'record').mockRejectedValueOnce(new Error('Audit unavailable'));
+    await api(sales).post('customers/' + done!.customer!.id + '/calls', { siteId: site, summary: 'Promised callback', direction: 'outgoing', outcome: 'connected', followUp: { title: 'Call again', dueAt: new Date().toISOString() } }).set('Idempotency-Key', randomUUID()).expect(503);
+    expect(await mongo.customerJournal.countDocuments()).toBe(0);
+    expect(await mongo.tasks.countDocuments()).toBe(0);
   });
 
   it('disables writes unless explicitly enabled and never falls back to simulation', async () => {
