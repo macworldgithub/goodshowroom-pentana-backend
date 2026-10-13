@@ -189,3 +189,9 @@ overdue/today/call filters, call-task scheduling, invalid inputs, and authentica
 Run after folders 05/06 create confirmed customers. SALES team-denial expectations
 assume its default permissions. My Day uses the configured SITE timezone. ADMIN
 must use view=team for team work. Call scheduling does not log or dial actual calls.
+
+My Day verification update: collection has 20 folders and 143 requests. Folder 17
+now checks ownership, open status, counts, page limits, selected site-local date,
+next-page offset, and invalid bucket. Live requests were not rerun by the agent.
+Source-mode, team-permission changes, and orphaned-link exclusion are verified by
+MongoDB integration tests. See IMPLEMENTATION-PLAN.md for the unfinished Step 3 work.

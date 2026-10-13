@@ -56,7 +56,7 @@ describe('Durable integration and scraping runner against MongoDB', () => {
   beforeEach(async () => {
     config.mode = 'simulated'; config.writesEnabled = true;
     await Promise.all([mongo.commands.deleteMany({}), mongo.commandAttempts.deleteMany({}), mongo.simulatedRecords.deleteMany({}), mongo.simulatorBehaviors.deleteMany({}), mongo.customers.deleteMany({}), mongo.tasks.deleteMany({})]);
-    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'active' } });
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'active', extra_permissions: [] } });
   });
   afterEach(() => vi.restoreAllMocks());
   afterAll(async () => { await app?.close(); await replica?.stop(); vi.unstubAllEnvs(); });
@@ -340,6 +340,14 @@ describe('Durable integration and scraping runner against MongoDB', () => {
     expect(response.body.items[0].id).toBe(overdue.id);
     expect(response.body.items[0].customer.id).toBe(customerId);
     expect(response.body.pagination.hasMore).toBe(true);
+    const next = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&limit=1&offset=1').expect(200);
+    expect(next.body.items[0].id).toBe(today.id);
+    expect(next.body.totals).toEqual(response.body.totals);
+    const orphanId = randomUUID();
+    await mongo.tasks.insertOne({ ...today, _id: orphanId, id: orphanId, customer_id: randomUUID() });
+    const withoutOrphans = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12').expect(200);
+    expect(withoutOrphans.body.totals.all).toBe(3);
+    expect(withoutOrphans.body.items.some((task: { id: string }) => task.id === orphanId)).toBe(false);
     const todays = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&bucket=today').expect(200);
     expect(todays.body.items.map((task: { id: string }) => task.id)).toEqual([today.id, call.id]);
     const calls = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&bucket=calls').expect(200);
@@ -351,6 +359,11 @@ describe('Durable integration and scraping runner against MongoDB', () => {
     expect(team.body.items.some((task: { id: string }) => task.id === teamTask.id)).toBe(true);
     const personalAdmin = await api().get('my-day?siteId=' + site + '&date=2026-10-12').expect(200);
     expect(personalAdmin.body.totals.all).toBe(1);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { extra_permissions: ['tasks.view_team'] } });
+    const granted = await api(sales).get('my-day?siteId=' + site + '&date=2026-10-12&view=team').expect(200);
+    expect(granted.body.totals.all).toBe(4);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { extra_permissions: [] } });
+    await api(sales).get('my-day?siteId=' + site + '&view=team').expect(403);
     await api(other).get('my-day?siteId=' + site).expect(403);
     await api(sales).get('my-day?siteId=' + site + '&date=2026-02-30').expect(400);
     await api(sales).get('my-day?siteId=' + site + '&bucket=unknown').expect(400);

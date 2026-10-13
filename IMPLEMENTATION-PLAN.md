@@ -469,3 +469,60 @@ checks pass. No live Postman/Pentana requests were executed by this increment.
 
 Next: internal notes and call logging, then customer edits/privacy and expanded task
 management. Actual Pentana/eraPower read/write scraping stays LAST.
+
+## Steps 1–3 verification and remaining work — 12 October 2026
+
+Backend-only verification after the frontend was restored to Ahmed's commit.
+My Day already existed; its implementation was retained and its tests/Postman checks
+strengthened rather than rebuilt. No frontend files or real Pentana scraper changed.
+
+Fresh verification:
+- Build and lint pass.
+- 77 unit tests, 4 endpoint tests, and 39 temporary-MongoDB integration tests pass.
+- My Day checks include DST boundaries, own/team scope, permission grant/removal,
+  full counts before pagination, next pages, missing customer links, completed/
+  cancelled/future work exclusion, source-mode isolation, and suspension.
+- A read-only query against the configured application database connected and found
+  zero total/active SALES/SERVICE memberships with null/missing site scope. No live
+  membership or customer data was changed by this audit.
+- Postman scripts parse and five scope-resolution checks pass. Exports refreshed;
+  there are 20 folders and 143 requests. Folder 17 adds selected-date/next-page/
+  invalid-bucket checks and stronger ownership/count assertions. Private credentials
+  and runtime IDs are preserved. Live Postman requests were not executed by this run.
+
+Step 1: implemented backend foundation (site/brand management, access validation,
+permissions, pagination, protected setup/auth/invitations). No missing backend
+feature was identified within this batch's agreed scope. The legacy unscoped-staff
+assessment is now verified for the configured database. Final live Supabase sign-in,
+invitation email/recovery delivery, and full Postman acceptance remain separate
+checks; no automatic data migration or additional-organisation feature is implied.
+
+Step 2: implemented customer integration foundation (simulator, normalized imports,
+customer.create queue, leases, retry/idempotency, visible failures, ADMIN recovery).
+This is not a complete DMS integration. Additional entity reads/simulators/write
+command kinds must be implemented with later workflows. Automated source read-sync
+scheduling/cursor tracking and full reconciliation are not implemented. Actual
+scraping, source mapping validation, dedicated least-privilege runner identity,
+production monitoring/retention/backup acceptance are reserved for the final stage.
+
+Step 3: PARTIAL, not complete. Implemented customer detail, current activity events,
+follow-up creation/listing/completion, scheduled call tasks, and initial My Day.
+Still required:
+- Internal notes and actual call logging, outcomes, and promised follow-ups.
+- Customer contact editing through simulator/commands, with clear result states.
+- Source-owned privacy/contact restrictions and channel consent enforcement.
+- Task editing, rescheduling, validated reassignment, and cancellation APIs.
+- Customer message drafts/sending/delivery history after provider confirmation.
+- Timeline events for those new actions. Source-only historical activity is not
+  imported automatically by the existing local activity endpoint.
+- Sales/Service appointment/delivery/collection inputs will join My Day when those
+  desks are built; the restored frontend is outside this backend-only verification.
+
+My Day API: GET /api/my-day?siteId=...&view=own (default), or view=team with
+current tasks.view_team permission. Optional date, bucket, offset, limit. It is
+implemented and verified for the current task/call-task scope, not all future desks.
+
+Next functional increment remains backend notes and call logging, then customer
+editing/privacy and expanded task management. Do not mark the overall Step 3 complete
+until its remaining acceptance requirements are implemented and tested. Actual
+Pentana/eraPower scraping for reads AND writes remains LAST.

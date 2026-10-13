@@ -232,6 +232,7 @@ const environment = {
     serviceEmail: 'showroom.service@example.com', servicePassword: 'Showroom-Service-Test!2026',
     runAccessMutationTests: 'false', allowInvitationEmails: 'false', runSessionRefresh: 'false',
     runScrapingRunnerExamples: 'false', scrapingOutcome: '', scrapingCustomerJson: '', scrapingErrorCode: '', scrapingErrorMessage: '', integrationRetryNote: '', confirmedNotApplied: 'false', simulatorBehavior: 'accept',
+    myDayDate: '', myDayCallTaskId: '',
     integrationMode: '', runIntegrationTests: 'false', integrationCommandId: '', integrationLeaseToken: '', integrationIdempotencyKey: '', scrapedCustomerExternalId: '',
     userCreationMode: 'direct', runFoundationManagementTests: 'false', foundationBrandId: '', foundationSiteId: '', foundationInvitationId: '',
     allowAdditionalAdminCreation: 'false', additionalAdminEmail: 'showroom.admin2@example.com', additionalAdminPassword: 'Showroom-Admin2-Test!2026',
@@ -390,14 +391,24 @@ folder('16 Customer 360 — activity history', [
 ], 'Run after confirmed customer and task workflows. Customer/source events are shared within the authorised site; task events follow current task ownership/team permissions. Notes/calls are next.');
 folder('17 My Day — personal and team queues', [
   ...['sales', 'service'].map(role => request(role.toUpperCase() + ' personal My Day', 'GET', 'my-day?siteId={{siteId}}&view=own&limit=10', role, undefined, 200,
-    "pm.test('Queue and counts provided', () => pm.expect(pm.response.json().items).to.be.an('array'));", guard([role + 'Token', 'siteId']))),
+    `const data = pm.response.json();
+${save('myDayDate', 'data.day.date')}
+pm.test('Personal queue belongs to this user', () => pm.expect(data.items.every(item => item.assigned_to === pm.environment.get(roleVariable))).to.eql(true));
+pm.test('Only open tasks are included', () => pm.expect(data.items.every(item => !item.completed_at && !item.cancelled_at)).to.eql(true));
+pm.test('Counts cover overdue and today', () => pm.expect(data.totals.all).to.eql(data.totals.overdue + data.totals.today));
+pm.test('Page respects limit', () => pm.expect(data.items.length <= data.pagination.limit).to.eql(true));`.replace('roleVariable', "'" + role + "UserId'"), guard([role + 'Token', 'siteId']))),
   request('ADMIN team My Day', 'GET', 'my-day?siteId={{siteId}}&view=team&limit=10', 'admin', undefined, 200),
   request('Overdue personal tasks', 'GET', 'my-day?siteId={{siteId}}&bucket=overdue', 'sales', undefined, 200),
   request('Today personal tasks', 'GET', 'my-day?siteId={{siteId}}&bucket=today', 'sales', undefined, 200),
   request('Scheduled call tasks', 'GET', 'my-day?siteId={{siteId}}&bucket=calls', 'sales', undefined, 200),
-  request('Schedule a SALES call task', 'POST', 'tasks', 'sales', { siteId: '{{siteId}}', customerId: '{{salesCustomerId}}', title: 'Call customer today', kind: 'call', dueAt: '{{dueAt}}' }, 201, '',
+  request('Schedule a SALES call task', 'POST', 'tasks', 'sales', { siteId: '{{siteId}}', customerId: '{{salesCustomerId}}', title: 'Call customer today', kind: 'call', dueAt: '{{dueAt}}' }, 201, save('myDayCallTaskId', 'pm.response.json().task.id'),
     guard(['salesToken', 'siteId', 'salesCustomerId']) + "\npm.variables.set('dueAt', new Date().toISOString());"),
   request('Read scheduled calls after creation', 'GET', 'my-day?siteId={{siteId}}&bucket=calls', 'sales', undefined, 200),
+  request('Selected site-local date', 'GET', 'my-day?siteId={{siteId}}&date={{myDayDate}}&limit=1', 'sales', undefined, 200,
+    "pm.test('Selected date returned', () => pm.expect(pm.response.json().day.date).to.eql(pm.environment.get('myDayDate')));", guard(['myDayDate', 'siteId', 'salesToken'])),
+  request('My Day next page', 'GET', 'my-day?siteId={{siteId}}&date={{myDayDate}}&limit=1&offset=1', 'sales', undefined, 200,
+    "pm.test('Page offset returned', () => pm.expect(pm.response.json().pagination.offset).to.eql(1));", guard(['myDayDate', 'siteId', 'salesToken'])),
+  request('Reject unknown queue bucket', 'GET', 'my-day?siteId={{siteId}}&bucket=unknown', 'sales', undefined, 400),
   request('Reject default SALES team visibility', 'GET', 'my-day?siteId={{siteId}}&view=team', 'sales', undefined, 403),
   request('Reject invalid calendar date', 'GET', 'my-day?siteId={{siteId}}&date=2026-02-30', 'sales', undefined, 400),
   request('Reject invalid page size', 'GET', 'my-day?siteId={{siteId}}&limit=101', 'sales', undefined, 400),
