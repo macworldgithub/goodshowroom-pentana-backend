@@ -52,7 +52,7 @@ export class CustomerJournalController {
       if (input.followUp) {
         await this.access.requireSite(request, siteId, 'tasks.write', session);
         const taskId = randomUUID();
-        followUp = { _id: taskId, id: taskId, organisation_id: site.organisation_id, site_id: siteId, customer_id: id,
+        followUp = { version: 0, _id: taskId, id: taskId, organisation_id: site.organisation_id, site_id: siteId, customer_id: id,
           created_by: request.user!.id, assigned_to: request.user!.id, kind: 'call', title: input.followUp.title, details: null,
           due_at: input.followUp.dueAt, priority: input.followUp.priority, completed_at: null, created_at: now, updated_at: now,
           ...(customer.integration_mode ? { integration_mode: customer.integration_mode } : {}) };

@@ -1,6 +1,6 @@
 import { ConflictException, HttpException, Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { MongoClient, MongoServerError, type ClientSession, type Db } from 'mongodb';
-import type { AuditEvent, Brand, Customer, CustomerJournal, Invitation, Membership, Organisation, Site, Task } from './models.js';
+import type { AuditEvent, Brand, Customer, CustomerJournal, CustomerMessage, Invitation, Membership, Organisation, Site, Task } from './models.js';
 import type { Attempt, Command, SimulatedRecord, SimulatorBehavior } from '../integration/contracts.js';
 
 @Injectable()
@@ -29,7 +29,13 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get invitations() { return this.database.collection<Invitation>('staff_invitations'); }
   get customers() { return this.database.collection<Customer>('customers'); }
   get tasks() { return this.database.collection<Task>('tasks'); }
+  get salesLeads() { return this.database.collection<import('./models.js').SalesLead>('sales_leads'); }
+  get stockVehicles() { return this.database.collection<import('./models.js').StockVehicle>('stock_vehicles'); }
+  get appraisals() { return this.database.collection<import('./models.js').TradeInAppraisal>('trade_in_appraisals'); }
+  get salesDeals() { return this.database.collection<import('./models.js').SalesDeal>('sales_deals'); }
+  get reservations() { return this.database.collection<import('./models.js').StockReservation>('stock_reservations'); }
   get customerJournal() { return this.database.collection<CustomerJournal>('customer_journal'); }
+  get customerMessages() { return this.database.collection<CustomerMessage>('customer_messages'); }
   get commands() { return this.database.collection<Command>('integration_commands'); }
   get commandAttempts() { return this.database.collection<Attempt>('integration_attempts'); }
   get simulatedRecords() { return this.database.collection<SimulatedRecord>('simulated_source_records'); }
@@ -39,6 +45,19 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get systemState() { return this.database.collection<{ _id: string; organisation_id?: string; email?: string; user_id?: string; created_at?: string; revision?: number }>('system_state'); }
 
   private async ensureIndexes() {
+    await this.reservations.createIndex({ organisation_id: 1, stock_id: 1 }, { unique: true, partialFilterExpression: { status: 'active' } });
+    await this.reservations.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.reservations.createIndex({ status: 1, expires_at: 1 });
+    await this.reservations.createIndex({ site_id: 1, deal_id: 1, created_at: -1, id: 1 });
+    await this.salesDeals.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.salesDeals.createIndex({ site_id: 1, lead_id: 1, brand_id: 1, updated_at: -1, id: 1 });
+    await this.appraisals.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.appraisals.createIndex({ site_id: 1, lead_id: 1, updated_at: -1, id: 1 });
+    await this.stockVehicles.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.stockVehicles.createIndex({ site_id: 1, integration_mode: 1, stock_number: 1 }, { unique: true });
+    await this.stockVehicles.createIndex({ site_id: 1, brand_id: 1, status: 1, updated_at: -1, id: 1 });
+    await this.salesLeads.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.salesLeads.createIndex({ site_id: 1, assigned_to: 1, updated_at: -1, id: 1 });
     await this.sites.createIndex({ organisation_id: 1, name: 1 }, { unique: true });
     await this.brands.createIndex({ organisation_id: 1, name: 1 }, { unique: true });
     await this.memberships.createIndex({ organisation_id: 1, site_id: 1, user_id: 1, role: 1 }, { unique: true });
@@ -52,14 +71,20 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
       unique: true, partialFilterExpression: { 'external_ids.pentana': { $type: 'string' } },
     });
     await this.tasks.createIndex({ site_id: 1, assigned_to: 1, due_at: 1 });
+    await this.customerMessages.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, created_at: -1, id: 1 });
+    await this.customerMessages.createIndex({ status: 1, send_started_at: 1 });
+    await this.customerMessages.createIndex({ organisation_id: 1, created_by: 1, draft_key: 1 }, { unique: true, partialFilterExpression: { draft_key: { $type: 'string' } } });
     await this.customerJournal.createIndex({ organisation_id: 1, created_by: 1, idempotency_key: 1 }, { unique: true });
     await this.customerJournal.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, occurred_at: -1, id: 1 });
     await this.tasks.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, assigned_to: 1 });
     await this.commands.createIndex({ organisation_id: 1, actor_user_id: 1, idempotency_key: 1 }, { unique: true });
     await this.commands.createIndex({ mode: 1, status: 1, available_at: 1 });
+    await this.commands.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, mode: 1, created_at: -1, id: 1 });
+    await this.commands.createIndex({ mode: 1, customer_id: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['queued', 'processing', 'retry_wait'] } } });
     await this.commands.createIndex({ status: 1, lease_expires_at: 1 });
     await this.commandAttempts.createIndex({ command_id: 1, attempt: 1 }, { unique: true });
     await this.simulatedRecords.createIndex({ command_id: 1 }, { unique: true });
+    await this.simulatedRecords.createIndex({ organisation_id: 1, site_id: 1, 'customer.external_id': 1, 'customer.observed_at': -1, created_at: -1 });
     await this.simulatorBehaviors.createIndex({ organisation_id: 1, site_id: 1 }, { unique: true });
     await this.customers.createIndex({ organisation_id: 1, integration_mode: 1, integration_external_id: 1 }, { unique: true,
       partialFilterExpression: { integration_external_id: { $type: 'string' } } });

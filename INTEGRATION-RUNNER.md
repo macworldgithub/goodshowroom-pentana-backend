@@ -1,5 +1,15 @@
 # Pentana scraping runner contract
 
+Current customer commands include customer.create, customer.update and
+customer.privacy_update. Updates include external_id and expected_revision; the
+runner must verify the source revision before submitting an edit, preserve unrelated
+fields, and return the complete confirmed contact/privacy record with a new revision.
+If privacy cannot be verified, report unknown rather than claiming success. Only one
+unresolved source change per customer is allowed. The simulator tests these contracts;
+actual scraping stays the final stage. Normalized observations may include privacy
+with do_not_contact and email/sms/call unknown/granted/denied states. Omitted privacy
+is treated as unknown consent. See CUSTOMER-360.md for the Step 3 workflows.
+
 Step 2 provides the backend boundary for read and write scraping. It does not log
 into Pentana or assume selectors, dealer permissions, field names, or supported UI
 operations. Your runner owns the browser session, Pentana credentials, source/site

@@ -10,6 +10,7 @@ import { IntegrationConfig } from '../src/integration/integration.config.js';
 import { IntegrationService } from '../src/integration/integration.service.js';
 import { SimulatedAdapter } from '../src/integration/simulated.adapter.js';
 import type { SourceCustomer } from '../src/integration/contracts.js';
+import { CustomerMailTransport } from '../src/crm/customer-mail.transport.js';
 
 describe('Durable integration and scraping runner against MongoDB', () => {
   let replica: MongoMemoryReplSet;
@@ -32,6 +33,178 @@ describe('Durable integration and scraping runner against MongoDB', () => {
   const enqueue = (key = randomUUID(), actor = sales, body = input) => request(app.getHttpServer()).post('/api/customers').set('Authorization', 'Bearer ' + actor).set('Idempotency-Key', key).send(body);
   const source = (external_id = 'source-123', extra: Partial<SourceCustomer> = {}): SourceCustomer => ({ external_id, revision: '1', observed_at: '2026-10-09T00:00:00.000Z', first_name: 'Queued', last_name: 'Customer', email: 'queued@example.test', phone: null, ...extra });
   const scraping = () => { config.mode = 'scraping'; config.writesEnabled = true; };
+  const patch = (path: string, body: object, actor = sales, key = randomUUID()) => request(app.getHttpServer()).patch('/api/' + path).set('Authorization', 'Bearer ' + actor).set('Idempotency-Key', key).send(body);
+  const keyedPost = (path: string, body: object, actor = sales, key = randomUUID()) => request(app.getHttpServer()).post('/api/' + path).set('Authorization', 'Bearer ' + actor).set('Idempotency-Key', key).send(body);
+  const confirmed = async () => {
+    const queued = await enqueue().expect(202);
+    const done = await integration.processOne(queued.body.command.id);
+    return done!.customer!.id;
+  };
+  const consent = { do_not_contact: false, email: 'granted', sms: 'unknown', call: 'denied' };
+  const grantConsent = async (id: string) => {
+    const queued = await patch(`customers/${id}/privacy`, { siteId: site, privacy: consent }).expect(202);
+    await integration.processOne(queued.body.command.id);
+  };
+  it('provides a paginated sanitized assignee directory only with assignment permission', async () => {
+    await mongo.users.updateOne({ _id: sales }, { $set: { full_name: 'Sales Assignee', email: 'private@example.test', updated_at: new Date().toISOString() } }, { upsert: true });
+    await api(sales).get(`sites/${site}/staff`).expect(403);
+    const first = await api().get(`sites/${site}/staff?limit=1`).expect(200);
+    expect(first.body.staff).toHaveLength(1); expect(first.body.pagination.hasMore).toBe(true);
+    const second = await api().get(`sites/${site}/staff?limit=1&offset=1`).expect(200);
+    const rows = [...first.body.staff, ...second.body.staff];
+    expect(rows.map(row => row.userId)).toEqual(expect.arrayContaining([sales, admin]));
+    expect(rows.map(row => row.userId)).not.toContain(other);
+    expect(rows.every(row => !('email' in row) && !('grants' in row))).toBe(true);
+    expect(rows.find(row => row.userId === sales).fullName).toBe('Sales Assignee');
+    const members = await api().get(`admin/memberships?organisationId=${org}`).expect(200);
+    expect(members.body.memberships.find((row: { user_id: string }) => row.user_id === sales).user).toEqual({ fullName: 'Sales Assignee', email: 'private@example.test' });
+    await api(sales).get(`admin/memberships?organisationId=${org}`).expect(403);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { extra_permissions: ['tasks.assign'] } });
+    await api(sales).get(`sites/${site}/staff`).expect(200);
+    await api(other).get(`sites/${site}/staff`).expect(403);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    const restricted = await api().get(`sites/${site}/staff`).expect(200);
+    expect(restricted.body.staff.map((row: { userId: string }) => row.userId)).not.toContain(sales);
+  });
+  const draft = async (id: string) => (await keyedPost(`customers/${id}/messages`, { siteId: site, subject: 'Customer update', body: 'Your requested update.' }).expect(201)).body.message;
+
+  it('queues partial contact edits, preserves confirmed values until acceptance, and replays the same key', async () => {
+    const id = await confirmed(); const key = randomUUID();
+    const queued = await patch(`customers/${id}`, { siteId: site, firstName: 'Updated' }, sales, key).expect(202);
+    expect((await mongo.customers.findOne({ id }))!.first_name).toBe('Queued');
+    const pending = await api().get(`customers/${id}/changes?siteId=${site}&limit=1`).expect(200);
+    expect(pending.body.changes[0].state).toBe('pending'); expect(pending.body.changes[0]).not.toHaveProperty('payload');
+    await patch(`customers/${id}`, { siteId: site, firstName: 'Other' }).expect(409);
+    const done = await integration.processOne(queued.body.command.id);
+    expect(done!.command.status).toBe('succeeded'); expect(done!.customer!.first_name).toBe('Updated');
+    const changes = await api(sales).get(`customers/${id}/changes?siteId=${site}&limit=1`).expect(200);
+    expect(changes.body.changes[0].state).toBe('confirmed');
+    await api(other).get(`customers/${id}/changes?siteId=${site}`).expect(403);
+    const replay = await patch(`customers/${id}`, { siteId: site, firstName: 'Updated' }, sales, key).expect(202);
+    expect(replay.body.command.id).toBe(queued.body.command.id);
+    await patch(`customers/${id}`, { siteId: site, firstName: 'Different' }, sales, key).expect(409);
+    const history = await api(sales).get(`customers/${id}/activity?siteId=${site}`).expect(200);
+    expect(history.body.activities.map((e: { type: string }) => e.type)).toContain('customer.updated');
+  });
+  it('rejects stale browser contact/privacy forms while allowing identical completed-command replay', async () => {
+    const id = await confirmed(); const key = randomUUID();
+    const baseline = (await mongo.customers.findOne({ id }))!.source_revision;
+    const body = { siteId: site, firstName: 'New contact', expectedRevision: baseline };
+    const submitted = await patch(`customers/${id}`, body, sales, key).expect(202);
+    await integration.processOne(submitted.body.command.id);
+    await patch(`customers/${id}`, body, sales, key).expect(202);
+    await patch(`customers/${id}`, { siteId: site, lastName: 'Stale', expectedRevision: baseline }).expect(409);
+    await patch(`customers/${id}/privacy`, { siteId: site, privacy: consent, expectedRevision: baseline }).expect(409);
+    await patch(`customers/${id}/privacy`, { siteId: site, privacy: consent, expectedRevision: 1 }).expect(400);
+    expect(await mongo.commands.countDocuments({ customer_id: id, kind: 'customer.privacy_update' })).toBe(0);
+    const revision = (await mongo.customers.findOne({ id }))!.source_revision;
+    await patch(`customers/${id}/privacy`, { siteId: site, privacy: consent, expectedRevision: revision }).expect(202);
+  });
+  it('retains confirmed data on rejected/uncertain edits, blocks concurrent pending writes, and rechecks access', async () => {
+    const id = await confirmed();
+    await api().post('admin/integration/simulator/behavior', { siteId: site, behavior: 'reject', count: 1 }).expect(201);
+    const q = await patch(`customers/${id}`, { siteId: site, lastName: 'Changed' }).expect(202);
+    expect((await integration.processOne(q.body.command.id))!.command.status).toBe('rejected');
+    expect((await mongo.customers.findOne({ id }))!.last_name).toBe('Customer');
+    await api().post('admin/integration/simulator/behavior', { siteId: site, behavior: 'unknown', count: 1 }).expect(201);
+    const unknown = await patch(`customers/${id}`, { siteId: site, lastName: 'Changed' }).expect(202);
+    expect((await integration.processOne(unknown.body.command.id))!.command.status).toBe('needs_review');
+    await patch(`customers/${id}/privacy`, { siteId: site, privacy: consent }).expect(409);
+    await patch(`customers/${id}`, { siteId: site, firstName: 'Forbidden' }, other).expect(403);
+    await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'suspended' } });
+    await patch(`customers/${id}`, { siteId: site, firstName: 'Forbidden' }).expect(403);
+  });
+  it('rejects stale revisions before source mutation and supports opaque source revisions', async () => {
+    const id = await confirmed();
+    await mongo.simulatedRecords.deleteMany({});
+    await mongo.customers.updateOne({ id }, { $set: { source_revision: 'opaque-version' } });
+    const q = await patch(`customers/${id}`, { siteId: site, firstName: 'New' }).expect(202);
+    const done = await integration.processOne(q.body.command.id);
+    expect(done!.command.status).toBe('succeeded'); expect(done!.customer!.source_revision).not.toBe('NaN');
+    const stale = await patch(`customers/${id}`, { siteId: site, firstName: 'Stale' }).expect(202);
+    await mongo.customers.updateOne({ id }, { $set: { source_revision: 'newer' } });
+    await integration.processOne(stale.body.command.id);
+    expect((await mongo.commands.findOne({ id: stale.body.command.id }))!.status).toBe('rejected');
+  });
+  it('validates customer reassignment against current site membership', async () => {
+    const id = await confirmed();
+    await patch(`customers/${id}/assignment`, { siteId: site, assignedTo: admin }).expect(403);
+    await patch(`customers/${id}/assignment`, { siteId: site, assignedTo: other }, admin).expect(400);
+    const moved = await patch(`customers/${id}/assignment`, { siteId: site, assignedTo: admin }, admin).expect(200);
+    expect(moved.body.customer.assigned_to).toBe(admin);
+    expect((await api().get(`customers/${id}/activity?siteId=${site}`)).body.activities.map((e: { type: string }) => e.type)).toContain('customer.assigned');
+  });
+  it('edits, reschedules, reassigns, and cancels tasks without stale overwrites or cross-site assignments', async () => {
+    const id = await confirmed(); const task = (await api(sales).post('tasks', { siteId: site, customerId: id, title: 'Callback', dueAt: new Date().toISOString() }).expect(201)).body.task;
+    await patch(`tasks/${task.id}`, { siteId: site, version: 0, assignedTo: admin }).expect(403);
+    await patch(`tasks/${task.id}`, { siteId: site, version: 0, assignedTo: other }, admin).expect(400);
+    const changed = await patch(`tasks/${task.id}`, { siteId: site, version: 0, dueAt: '2020-01-01T00:00:00Z', kind: 'call', priority: 'high' }).expect(200);
+    expect(changed.body.task.version).toBe(1);
+    await patch(`tasks/${task.id}`, { siteId: site, version: 0, title: 'Stale edit' }).expect(409);
+    const assigned = await patch(`tasks/${task.id}`, { siteId: site, version: 1, assignedTo: admin }, admin).expect(200);
+    await api(sales).get(`tasks/${task.id}?siteId=${site}`).expect(404);
+    await patch(`tasks/${task.id}/cancel`, { siteId: site, version: assigned.body.task.version, reason: 'Customer no longer needs this callback' }, admin).expect(200);
+    await request(app.getHttpServer()).patch(`/api/tasks/${task.id}/complete?siteId=${site}`).set('Authorization', 'Bearer ' + admin).expect(400);
+    const day = await api().get(`my-day?siteId=${site}&view=team`).expect(200);
+    expect(day.body.items).toHaveLength(0);
+    const events = (await api().get(`customers/${id}/activity?siteId=${site}`)).body.activities.map((e: { type: string }) => e.type);
+    expect(events).toEqual(expect.arrayContaining(['task.rescheduled', 'task.assigned', 'task.cancelled']));
+  });
+  it('requires confirmed email consent, blocks pending privacy updates, and never sends drafts implicitly', async () => {
+    const id = await confirmed(); const m = await draft(id); const mail = app.get(CustomerMailTransport);
+    const spy = vi.spyOn(mail, 'send');
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }).expect(403); expect(spy).not.toHaveBeenCalled();
+    const q = await patch(`customers/${id}/privacy`, { siteId: site, privacy: consent }).expect(202);
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }).expect(403);
+    await integration.processOne(q.body.command.id);
+    await patch(`customers/${id}/privacy`, { siteId: site, privacy: { ...consent, email: 'denied' } }).expect(202);
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }).expect(409);
+    expect(spy).not.toHaveBeenCalled();
+  });
+  it('deduplicates draft and explicit send, shares outcomes, and distinguishes acceptance from delivery', async () => {
+    const id = await confirmed(); await grantConsent(id); const key = randomUUID();
+    const content = { siteId: site, subject: 'Customer update', body: 'Your requested update.' };
+    const a = await keyedPost(`customers/${id}/messages`, content, sales, key).expect(201);
+    const b = await keyedPost(`customers/${id}/messages`, content, sales, key).expect(201); expect(a.body.message.id).toBe(b.body.message.id);
+    const m = a.body.message; const sendKey = randomUUID(); const spy = vi.spyOn(app.get(CustomerMailTransport), 'send');
+    const results = await Promise.all([keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }, sales, sendKey), keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }, sales, sendKey)]);
+    expect(results.map(r => r.status)).toEqual([202, 202]); expect(spy).toHaveBeenCalledTimes(1);
+    const sent = (await mongo.customerMessages.findOne({ id: m.id }))!; expect(sent.status).toBe('accepted');
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }).expect(409);
+    await api(sales).post(`messages/${m.id}/delivery`, { siteId: site, status: 'delivered', providerId: sent.provider_id, evidence: 'Simulation test delivery confirmation' }).expect(403);
+    await api().post(`messages/${m.id}/delivery`, { siteId: site, status: 'delivered', providerId: 'wrong-id', evidence: 'Simulation test delivery confirmation' }).expect(409);
+    await api().post(`messages/${m.id}/delivery`, { siteId: site, status: 'delivered', providerId: sent.provider_id, evidence: 'Simulation test delivery confirmation' }).expect(201);
+    const list = await api().get(`customers/${id}/messages?siteId=${site}&limit=1`).expect(200);
+    expect(list.body.messages[0].status).toBe('delivered'); expect(list.body.messages[0]).not.toHaveProperty('send_key');
+    const history = await api(sales).get(`customers/${id}/activity?siteId=${site}`).expect(200);
+    expect(history.body.activities.map((e: { type: string }) => e.type)).toContain('customer.message_delivered');
+    expect(history.body.activities.every((e: object) => !('metadata' in e))).toBe(true);
+  });
+  it('retains uncertain sends for review and reconciles without resending', async () => {
+    const id = await confirmed(); await grantConsent(id); const m = await draft(id);
+    const spy = vi.spyOn(app.get(CustomerMailTransport), 'send').mockResolvedValue({ outcome: 'unknown', errorCode: 'SMTP_UNCERTAIN' });
+    const key = randomUUID();
+    const sent = await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }, sales, key).expect(202);
+    expect(sent.body.message.status).toBe('needs_review');
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }, sales, key).expect(202);
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }).expect(409);
+    await api(sales).post(`messages/${m.id}/resolve`, { siteId: site, status: 'rejected', evidence: 'Source verified no message acceptance' }).expect(403);
+    await api().post(`messages/${m.id}/resolve`, { siteId: site, status: 'rejected', evidence: 'Source verified no message acceptance' }).expect(201);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it('protects draft ownership, consent restrictions, mode isolation, and stale-send recovery', async () => {
+    const id = await confirmed(); await grantConsent(id); const m = await draft(id);
+    await patch(`messages/${m.id}`, { siteId: site, version: 0, subject: 'Other site' }, other).expect(403);
+    await patch(`messages/${m.id}`, { siteId: site, version: 0, subject: 'Updated' }).expect(200);
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 0 }).expect(409);
+    await patch(`customers/${id}/privacy`, { siteId: site, privacy: { ...consent, do_not_contact: true } }).then(async q => { await integration.processOne(q.body.command.id); });
+    await keyedPost(`messages/${m.id}/send`, { siteId: site, version: 1 }).expect(403);
+    await mongo.customerMessages.updateOne({ id: m.id }, { $set: { status: 'sending', send_started_at: new Date(Date.now() - 180000).toISOString() } });
+    await api().post(`messages/${m.id}/recover`, { siteId: site, note: 'Process restarted before receipt persisted' }).expect(201);
+    expect((await mongo.customerMessages.findOne({ id: m.id }))!.status).toBe('needs_review');
+    config.mode = 'scraping';
+    await api(sales).get(`customers/${id}/messages?siteId=${site}`).expect(404);
+  });
 
   beforeAll(async () => {
     replica = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -55,6 +228,8 @@ describe('Durable integration and scraping runner against MongoDB', () => {
   });
   beforeEach(async () => {
     config.mode = 'simulated'; config.writesEnabled = true;
+    vi.stubEnv('MESSAGE_TRANSPORT', 'simulated');
+    await mongo.customerMessages.deleteMany({});
     await Promise.all([mongo.commands.deleteMany({}), mongo.commandAttempts.deleteMany({}), mongo.simulatedRecords.deleteMany({}), mongo.simulatorBehaviors.deleteMany({}), mongo.customers.deleteMany({}), mongo.tasks.deleteMany({}), mongo.customerJournal.deleteMany({})]);
     await mongo.memberships.updateOne({ id: salesMember }, { $set: { status: 'active', extra_permissions: [] } });
   });

@@ -306,6 +306,64 @@ separate requests.
 POST /api/tasks accepts optional kind=follow_up (default) or call. A call task
 schedules work only: it neither places a call nor records an actual call outcome,
 consent decision, or customer message. Existing tasks without kind remain ordinary
-follow-ups. Task editing/reassignment/rescheduling/cancellation APIs remain pending;
-My Day already excludes cancelled_at records for that later lifecycle extension.
+follow-ups. Task editing/reassignment/rescheduling/cancellation APIs are now available;
+see CUSTOMER-360.md. My Day excludes cancelled work and shows contact restrictions.
 Appointments, deliveries, collections, and service/sales work are future queue inputs.
+
+## Internal notes and recorded customer calls
+
+POST /api/customers/:id/notes requires an authenticated site user with
+customers.read/customers.write, Idempotency-Key (8–200 characters), siteId and text
+(1–5000 trimmed characters). Notes are append-only, application-owned and shared
+with customer readers at that site. They do not change source/customer contact
+fields, send messages, or write to Pentana.
+
+POST /api/customers/:id/calls accepts siteId, summary (1–5000), direction
+(incoming/outgoing), outcome (connected/no_answer/voicemail/busy/wrong_number), and
+optional occurredAt. Omitted time is recorded as now; valid historical timestamps
+are accepted and future call times beyond 60 seconds clock tolerance rejected.
+This endpoint logs an actual/attempted call; it does NOT dial a number or authorize
+contact under consent rules. Recording a preference in text is not a consent
+or privacy-field update.
+
+Optional followUp: { title, dueAt, priority } creates a call task assigned to the
+recorder, requiring tasks.write. Task, call entry, and audit events commit together.
+The due date may be a historical overdue promise or a future callback. No implicit
+completion of an earlier scheduled call task occurs. Use the existing complete
+endpoint separately if applicable; automatic linkage/completion is future work.
+
+Both write routes return HTTP 201 with entry, followUp (or null), replayed, and
+integration metadata. Reusing the key with the same normalized request returns the
+same entry/task; changed request/customer/site/kind/mode under that user's organisation
+key returns 409. Retain keys and stable promise due dates on retries. Occurrence time
+omission is normalized as null for the hash, so delayed retries remain identical.
+
+GET /api/customers/:id/journal?siteId=...&offset=0&limit=10 lists site-shared entries
+by actual occurrence time, then ID. Internal request hash/key fields are excluded.
+A follow_up_task_id is shown only when the current user can read that specific task
+under ownership/team rules; shared call text/outcome remains visible independently.
+Entries include created_by, occurred_at, and created_at; the shared activity endpoint
+adds readable authors and note/call content. Its occurredAt is the real event time
+and recordedAt records when the event was logged, including backdated calls.
+Timeline ordering now follows occurrence time with ID as tie-breaker.
+
+Customer/site/organisation/mode checks and current memberships apply to all routes.
+Notes/calls are stored in customer_journal with unique idempotency and history indexes.
+No edit/delete routes, external call provider, or historical Pentana call import are
+implemented in this increment. Treat note/summary content as plain text in consumers.
+
+## Step 3: customer edits, consent, task management and SMTP email
+
+See [CUSTOMER-360.md](CUSTOMER-360.md) for current routes, permissions, command states,
+SMTP configuration and Postman simulation. Contact/privacy updates are confirmed
+by the source, task changes use versions, and email requires an explicit send with
+confirmed consent. SMTP is configurable email transport; SMS needs a separate
+provider. Live SMTP remains unconfigured/unverified. Real Pentana/eraPower scraping
+stays last; frontend files are outside this implementation.
+
+Frontend integration is now connected through Step 3; see
+[FRONTEND-INTEGRATION.md](../my-app/FRONTEND-INTEGRATION.md). The newer implementation
+plan section supersedes the earlier backend-only status. For local Atlas DNS failures,
+the optional `pnpm run start:local:dns` runs the compiled backend with a process-only
+resolver workaround, retaining TLS and refusing production mode. Normal start commands
+remain available; build the backend before using this local fallback.

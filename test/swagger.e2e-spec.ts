@@ -34,6 +34,11 @@ describe('Swagger explorer', () => {
     expect(body.paths['/api/admin/integration/commands/{id}/result'].post.requestBody.content['application/json'].schema.required).toContain('leaseToken');
     expect(body.paths['/api/customers/{id}'].get.parameters.find((item: { name: string }) => item.name === 'siteId').required).toBe(true);
     expect(body.paths['/api/customers/{id}'].get.security).toEqual([{ bearer: [] }]);
+    expect(body.paths['/api/customers/{id}/notes'].post.parameters.find((item: { name: string }) => item.name === 'Idempotency-Key').required).toBe(true);
+    expect(body.paths['/api/customers/{id}/calls'].post.requestBody.content['application/json'].schema.properties.followUp.required).toContain('dueAt');
+    expect(body.paths['/api/customers/{id}/privacy'].patch.requestBody.content['application/json'].schema.properties.privacy.required).toContain('do_not_contact');
+    expect(body.paths['/api/tasks/{id}'].patch.requestBody.content['application/json'].schema.required).toContain('version');
+    expect(body.paths['/api/messages/{id}/send'].post.parameters.find((item: { name: string }) => item.name === 'Idempotency-Key').required).toBe(true);
     const customers = body.paths['/api/customers'].get;
     expect(customers.parameters.find((item: { name: string }) => item.name === 'siteId').required).toBe(true);
     expect(customers.parameters.find((item: { name: string }) => item.name === 'search').required).toBe(false);

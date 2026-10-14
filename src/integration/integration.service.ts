@@ -7,6 +7,8 @@ import { AccessService } from '../auth/access.service.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { publicRecord, type Customer } from '../database/models.js';
 import { text } from '../auth/validation.js';
+import { customerInput } from './validation.js';
+import { UNKNOWN_PRIVACY } from '../crm/privacy.js';
 import { IntegrationConfig } from './integration.config.js';
 import { SimulatedAdapter } from './simulated.adapter.js';
 import type { Command, CommandResult, CustomerInput, SourceCustomer } from './contracts.js';
@@ -66,6 +68,39 @@ export class IntegrationService {
     }
   }
 
+  async enqueueChange(request: AuthenticatedRequest, siteId: string, customerId: string, kind: 'customer.update' | 'customer.privacy_update', patch: Partial<CustomerInput>, key: unknown, expectedRevision?: string) {
+    if (!this.config.writesEnabled || this.config.mode === 'disabled') throw new ServiceUnavailableException('Source writes are disabled');
+    const mode = this.config.mode;
+    const idempotencyKey = text(key, 'Idempotency-Key', 8, 200);
+    const hash = createHash('sha256').update(JSON.stringify({ mode, siteId, customerId, kind, patch, expectedRevision })).digest('hex');
+    return this.mongo.transaction(async session => {
+      const initial = await this.access.requireSite(request, siteId, 'customers.write', session);
+      await this.mongo.organisations.updateOne({ id: initial.organisation_id }, { $inc: { access_revision: 1 } }, { session });
+      const site = await this.access.requireSite(request, siteId, 'customers.write', session);
+      const filter = { organisation_id: site.organisation_id, actor_user_id: request.user!.id, idempotency_key: idempotencyKey };
+      const previous = await this.mongo.commands.findOne(filter, { session });
+      if (previous) {
+        if (previous.request_hash !== hash) throw new ConflictException('Idempotency key already used for another request');
+        return { command: publicCommand(previous), replayed: true, integration: this.config.info() };
+      }
+      const customer = await this.mongo.customers.findOne({ ...this.projectionFilter(), id: customerId, site_id: siteId, organisation_id: site.organisation_id }, { session });
+      if (!customer) throw new NotFoundException('Customer is unavailable');
+      if (customer.integration_mode !== mode || !customer.integration_external_id || !customer.source_revision) throw new ConflictException('Reconcile/import a source-backed customer before submitting source edits');
+      if (expectedRevision !== undefined && customer.source_revision !== expectedRevision) throw new ConflictException('Customer changed since this form was opened; refresh the profile before editing');
+      if (await this.mongo.commands.findOne({ mode, customer_id: customerId, status: { $in: ['queued', 'processing', 'retry_wait', 'needs_review'] } }, { session })) throw new ConflictException('Resolve the pending customer command before submitting another change');
+      const merged = { first_name: customer.first_name, last_name: customer.last_name, email: customer.email, phone: customer.phone, ...patch };
+      const contact = customerInput({ firstName: merged.first_name, lastName: merged.last_name, email: merged.email, phone: merged.phone });
+      const payload: CustomerInput = { ...contact, privacy: patch.privacy ?? customer.privacy ?? { ...UNKNOWN_PRIVACY } };
+      const id = randomUUID(); const now = new Date().toISOString();
+      const command: Command = { _id: id, id, ...filter, site_id: siteId, customer_id: customerId, mode, kind, payload,
+        external_id: customer.integration_external_id, expected_revision: customer.source_revision, request_hash: hash, attempts: 0,
+        status: 'queued', available_at: now, created_at: now, updated_at: now };
+      await this.mongo.commands.insertOne(command, { session });
+      await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'customer.change_queued', 'customer', customerId, { command_id: id, kind });
+      return { command: publicCommand(command), replayed: false, integration: this.config.info() };
+    });
+  }
+
   async visible(request: AuthenticatedRequest, id: string) {
     const command = await this.mongo.commands.findOne({ id });
     if (!command) throw new NotFoundException('Command is unavailable');
@@ -92,6 +127,14 @@ export class IntegrationService {
         await this.audit.record(session, admin?.user!.id ?? previous.actor_user_id, previous.organisation_id, previous.site_id, 'integration.command_rejected', 'command', id, { code: 'ACCESS_REVOKED' });
         return null;
       }
+      if (previous.kind !== 'customer.create') {
+        const customer = await this.mongo.customers.findOne({ id: previous.customer_id, site_id: previous.site_id, organisation_id: previous.organisation_id, integration_mode: previous.mode }, { session });
+        if (!customer || customer.source_revision !== previous.expected_revision) {
+          await this.mongo.commands.updateOne({ id }, { $set: { status: 'rejected', updated_at: now, error: { code: 'STALE_CUSTOMER', message: 'Customer changed after this request was prepared' } } }, { session });
+          await this.audit.record(session, previous.actor_user_id, previous.organisation_id, previous.site_id, 'customer.change_rejected', 'customer', previous.customer_id, { command_id: id });
+          return null;
+        }
+      }
       const next: Command = { ...previous, status: 'processing', attempts: previous.attempts + 1, lease_token: randomUUID(), lease_expires_at: new Date(Date.now() + 300000).toISOString(), updated_at: now };
       delete next.error;
       await this.mongo.commands.replaceOne({ _id: previous._id }, next, { session });
@@ -110,19 +153,19 @@ export class IntegrationService {
     if (existing && existing.site_id !== command.site_id) throw new ConflictException('Source customer is already mapped to another site; reconciliation is required');
     if (existing && existing.source_observed_at! > record.observed_at) return existing;
     if (existing?.source_observed_at === record.observed_at && (existing.source_revision !== record.revision ||
-      existing.first_name !== record.first_name || existing.last_name !== record.last_name || existing.email !== record.email || existing.phone !== record.phone)) {
+      existing.first_name !== record.first_name || existing.last_name !== record.last_name || existing.email !== record.email || existing.phone !== record.phone || JSON.stringify(existing.privacy ?? UNKNOWN_PRIVACY) !== JSON.stringify(record.privacy ?? UNKNOWN_PRIVACY))) {
       throw new ConflictException('Conflicting source observations at the same timestamp');
     }
     const id = existing?.id ?? command.customer_id;
     const now = new Date().toISOString();
     const customer: Customer = { _id: existing?._id ?? id, id, organisation_id: command.organisation_id, site_id: command.site_id,
       created_by: existing?.created_by ?? command.actor_user_id, assigned_to: existing?.assigned_to ?? command.actor_user_id,
-      first_name: record.first_name, last_name: record.last_name, email: record.email, phone: record.phone,
+      first_name: record.first_name, last_name: record.last_name, email: record.email, phone: record.phone, privacy: record.privacy ?? { ...UNKNOWN_PRIVACY },
       source: command.mode === 'simulated' ? 'simulated' : 'pentana', integration_mode: command.mode, integration_external_id: record.external_id,
       external_ids: command.mode === 'simulated' ? { simulated: record.external_id } : { pentana: record.external_id },
       source_revision: record.revision, source_observed_at: record.observed_at, created_at: existing?.created_at ?? now, updated_at: now };
     await this.mongo.customers.replaceOne(filter, customer, { session, upsert: true });
-    if (recordActivity && (!existing || existing.source_revision !== record.revision || existing.first_name !== record.first_name || existing.last_name !== record.last_name || existing.email !== record.email || existing.phone !== record.phone)) {
+    if (recordActivity && (!existing || existing.source_revision !== record.revision || existing.first_name !== record.first_name || existing.last_name !== record.last_name || existing.email !== record.email || existing.phone !== record.phone || JSON.stringify(existing.privacy ?? UNKNOWN_PRIVACY) !== JSON.stringify(customer.privacy))) {
       await this.audit.record(session, command.actor_user_id, command.organisation_id, command.site_id, existing ? 'customer.source_updated' : 'customer.source_imported', 'customer', customer.id, { mode: command.mode });
     }
     return customer;
@@ -143,7 +186,9 @@ export class IntegrationService {
       let response = result;
       if (result.outcome === 'succeeded') {
         // A source acknowledgement is not permission to change unrelated contact data.
-        if (JSON.stringify({ first_name: result.customer.first_name, last_name: result.customer.last_name, email: result.customer.email, phone: result.customer.phone }) !== JSON.stringify(command.payload)) {
+        if (JSON.stringify({ first_name: result.customer.first_name, last_name: result.customer.last_name, email: result.customer.email, phone: result.customer.phone,
+          ...(command.payload.privacy ? { privacy: result.customer.privacy } : {}) }) !== JSON.stringify(command.payload) ||
+          (command.external_id !== undefined && (result.customer.external_id !== command.external_id || result.customer.revision === command.expected_revision))) {
           response = { outcome: 'unknown', code: 'SOURCE_RESULT_MISMATCH', message: 'Source response differs from requested customer; reconciliation is required' };
           status = 'needs_review';
         } else {
@@ -156,8 +201,9 @@ export class IntegrationService {
       delete next.lease_token; delete next.lease_expires_at;
       await this.mongo.commands.replaceOne({ _id: command._id }, next, { session });
       await this.mongo.commandAttempts.updateOne({ command_id: id, attempt: command.attempts }, { $set: resolutionNote ? { resolution: { response: result, status, note: resolutionNote, actor: admin!.user!.id, resolved_at: now } } : { response: result, processing_outcome: response, outcome_status: status, completed_at: now } }, { session });
+      if (command.kind !== 'customer.create' && status !== 'succeeded') await this.audit.record(session, command.actor_user_id, command.organisation_id, command.site_id, 'customer.change_' + status, 'customer', command.customer_id, { command_id: id });
       await this.audit.record(session, admin?.user!.id ?? command.actor_user_id, command.organisation_id, command.site_id, `integration.command_${status}`, 'command', id, { attempt: command.attempts, outcome: response.outcome, mode: command.mode, ...(resolutionNote ? { resolutionNote } : {}) });
-      if (customer) await this.audit.record(session, command.actor_user_id, command.organisation_id, command.site_id, 'customer.created', 'customer', customer.id, { command_id: id, mode: command.mode });
+      if (customer) await this.audit.record(session, command.actor_user_id, command.organisation_id, command.site_id, command.kind === 'customer.create' ? 'customer.created' : command.kind === 'customer.privacy_update' ? 'customer.privacy_updated' : 'customer.updated', 'customer', customer.id, { command_id: id, mode: command.mode });
       return { command: publicCommand(next), customer: customer ? publicRecord(customer) : null, integration: this.config.info() };
     });
   }

@@ -232,7 +232,9 @@ const environment = {
     serviceEmail: 'showroom.service@example.com', servicePassword: 'Showroom-Service-Test!2026',
     runAccessMutationTests: 'false', allowInvitationEmails: 'false', runSessionRefresh: 'false',
     runScrapingRunnerExamples: 'false', scrapingOutcome: '', scrapingCustomerJson: '', scrapingErrorCode: '', scrapingErrorMessage: '', integrationRetryNote: '', confirmedNotApplied: 'false', simulatorBehavior: 'accept',
+    salesNoteKey: '', salesCallKey: '', journalFollowUpDueAt: '', salesNoteId: '', salesCallId: '', promisedCallTaskId: '',
     myDayDate: '', myDayCallTaskId: '',
+    runStep3Tests: 'false', step3SimulationVerified: 'false', messagingSimulationVerified: 'false', step3EditKey: '', step3PrivacyKey: '', step3CommandId: '', step3TaskId: '', step3TaskVersion: '', step3MessageId: '', step3MessageVersion: '', step3DraftKey: '', step3SendKey: '', step3ProviderId: '',
     integrationMode: '', runIntegrationTests: 'false', integrationCommandId: '', integrationLeaseToken: '', integrationIdempotencyKey: '', scrapedCustomerExternalId: '',
     userCreationMode: 'direct', runFoundationManagementTests: 'false', foundationBrandId: '', foundationSiteId: '', foundationInvitationId: '',
     allowAdditionalAdminCreation: 'false', additionalAdminEmail: 'showroom.admin2@example.com', additionalAdminPassword: 'Showroom-Admin2-Test!2026',
@@ -414,6 +416,171 @@ pm.test('Page respects limit', () => pm.expect(data.items.length <= data.paginat
   request('Reject invalid page size', 'GET', 'my-day?siteId={{siteId}}&limit=101', 'sales', undefined, 400),
   request('Missing My Day authentication', 'GET', 'my-day?siteId={{siteId}}', null, undefined, 401),
 ], 'Uses the site timezone; defaults to its current date. Calls are scheduled tasks, not recorded calls or actual dialling. Run after folders 05/06. Default SALES team rejection assumes no tasks.view_team extra permission. Completed work is excluded. Source appointments/deliveries are future inputs.');
+folder('18 Customer 360 — internal notes and call logging', [
+  request('Read shared customer journal', 'GET', 'customers/{{salesCustomerId}}/journal?siteId={{siteId}}&limit=10', 'sales', undefined, 200, '', guard(['salesToken', 'salesCustomerId', 'siteId'])),
+  request('Add internal SALES note', 'POST', 'customers/{{salesCustomerId}}/notes', 'sales', { siteId: '{{siteId}}', text: 'Customer prefers a morning callback.' }, 201,
+    save('salesNoteId', 'pm.response.json().entry.id'), guard(['salesToken', 'salesCustomerId', 'siteId']) + `\nif (!pm.environment.get('salesNoteKey')) { pm.environment.set('salesNoteKey', 'postman-note-' + Date.now()); }`),
+  request('Replay the same note without duplication', 'POST', 'customers/{{salesCustomerId}}/notes', 'sales', { siteId: '{{siteId}}', text: 'Customer prefers a morning callback.' }, 201,
+    "pm.test('Existing note returned', () => pm.expect(pm.response.json().entry.id).to.eql(pm.environment.get('salesNoteId')));", guard(['salesNoteKey', 'salesNoteId'])),
+  request('Log call with promised callback', 'POST', 'customers/{{salesCustomerId}}/calls', 'sales', { siteId: '{{siteId}}', summary: 'Discussed options and promised a callback.', direction: 'outgoing', outcome: 'connected', followUp: { title: 'Promised customer callback', dueAt: '{{journalFollowUpDueAt}}', priority: 'normal' } }, 201,
+    save('salesCallId', 'pm.response.json().entry.id') + '\n' + save('promisedCallTaskId', 'pm.response.json().followUp.id'), guard(['salesToken', 'salesCustomerId', 'siteId']) + `\nif (!pm.environment.get('salesCallKey')) { pm.environment.set('salesCallKey', 'postman-call-' + Date.now()); }
+if (!pm.environment.get('journalFollowUpDueAt')) { pm.environment.set('journalFollowUpDueAt', new Date(Date.now() + 3600000).toISOString()); }`),
+  request('Replay call and callback without duplication', 'POST', 'customers/{{salesCustomerId}}/calls', 'sales', { siteId: '{{siteId}}', summary: 'Discussed options and promised a callback.', direction: 'outgoing', outcome: 'connected', followUp: { title: 'Promised customer callback', dueAt: '{{journalFollowUpDueAt}}', priority: 'normal' } }, 201,
+    "pm.test('Same callback returned', () => pm.expect(pm.response.json().followUp.id).to.eql(pm.environment.get('promisedCallTaskId')));", guard(['salesCallKey', 'journalFollowUpDueAt', 'promisedCallTaskId'])),
+  request('SERVICE reads shared SALES customer notes/calls', 'GET', 'customers/{{salesCustomerId}}/journal?siteId={{siteId}}&limit=100', 'service', undefined, 200,
+    "pm.test('Call log is site-shared', () => pm.expect(pm.response.json().entries.map(entry => entry.id)).to.include(pm.environment.get('salesCallId')));", guard(['serviceToken', 'salesCustomerId', 'siteId', 'salesCallId'])),
+  request('Read Customer 360 timeline with notes/calls', 'GET', 'customers/{{salesCustomerId}}/activity?siteId={{siteId}}&limit=100', 'sales', undefined, 200,
+    "pm.test('Note event present', () => pm.expect(pm.response.json().activities.map(event => event.type)).to.include('customer.note_added'));"),
+  request('Next journal page', 'GET', 'customers/{{salesCustomerId}}/journal?siteId={{siteId}}&limit=1&offset=1', 'sales', undefined, 200),
+  request('Reject missing note idempotency key', 'POST', 'customers/{{salesCustomerId}}/notes', 'sales', { siteId: '{{siteId}}', text: 'No duplicate guard key' }, 400),
+  request('Reject note key reuse with changed content', 'POST', 'customers/{{salesCustomerId}}/notes', 'sales', { siteId: '{{siteId}}', text: 'Changed note content' }, 409, '', guard(['salesNoteKey'])),
+  request('Reject invalid call outcome', 'POST', 'customers/{{salesCustomerId}}/calls', 'sales', { siteId: '{{siteId}}', summary: 'Attempted call', direction: 'outgoing', outcome: 'invalid' }, 400),
+  request('Unauthenticated journal rejected', 'GET', 'customers/{{salesCustomerId}}/journal?siteId={{siteId}}', null, undefined, 401),
+], 'Run after confirmed SALES customer creation. Notes/call logs are append-only and site-shared; task references retain ownership permissions. Calls are logs only; no dialling or Pentana write. Clear salesNoteKey/salesCallKey/journalFollowUpDueAt to create another sample instead of replaying. SERVICE request requires same-site access.');
+const journalFolder = folders.find(group => group.name.startsWith('18 '));
+for (const item of journalFolder.item) {
+  if (item.request.method !== 'POST' || item.name.includes('missing note')) continue;
+  item.request.header.push({ key: 'Idempotency-Key', value: item.request.url.endsWith('/notes') ? '{{salesNoteKey}}' : '{{salesCallKey}}' });
+}
+const step3Start = `if (pm.environment.get('runStep3Tests') !== 'true') { pm.execution.skipRequest(); }
+else { pm.environment.set('step3SimulationVerified', 'false'); ${guard(['salesToken', 'siteId', 'salesCustomerId'])} }`;
+const step3Guard = `if (pm.environment.get('runStep3Tests') !== 'true') { pm.execution.skipRequest(); }
+else if (pm.environment.get('step3SimulationVerified') !== 'true') { throw new Error('Run folder 19 simulation verification first. These workflows are simulation-only.'); }`;
+const keyed = (item, key) => { item.request.header.push({ key: 'Idempotency-Key', value: '{{' + key + '}}' }); return item; };
+const newKey = key => `\npm.environment.set('${key}', 'postman-' + pm.variables.replaceIn('{{$guid}}'));`;
+const commandSaved = save('step3CommandId', 'pm.response.json().command.id');
+folder('19 Customer 360 — contact edits and consent simulation', [
+  request('Verify server simulation before Step 3 mutations', 'GET', 'integration/status', 'sales', undefined, 200,
+    `const data = pm.response.json(); if (data.mode !== 'simulated') throw new Error('Step 3 sample workflow requires simulated integration'); pm.environment.set('step3SimulationVerified', 'true');`, step3Start),
+  keyed(request('Queue customer contact edit', 'PATCH', 'customers/{{salesCustomerId}}', 'sales', { siteId: '{{siteId}}', firstName: 'Postman Updated' }, 202, commandSaved, step3Guard + newKey('step3EditKey')), 'step3EditKey'),
+  request('Read pending command and confirmed profile', 'GET', 'integration/commands/{{step3CommandId}}', 'sales', undefined, 200, '', step3Guard),
+  request('Read shared pending customer changes', 'GET', 'customers/{{salesCustomerId}}/changes?siteId={{siteId}}&limit=10', 'service', undefined, 200, '', step3Guard),
+  request('Confirm edit through simulator', 'POST', 'admin/integration/commands/{{step3CommandId}}/process', 'admin', {}, 201, '', step3Guard),
+  request('Read edited profile', 'GET', 'customers/{{salesCustomerId}}?siteId={{siteId}}', 'sales', undefined, 200,
+    "pm.test('Confirmed edit visible', () => pm.expect(pm.response.json().customer.first_name).to.eql('Postman Updated'));", step3Guard),
+  keyed(request('Replay identical contact edit', 'PATCH', 'customers/{{salesCustomerId}}', 'sales', { siteId: '{{siteId}}', firstName: 'Postman Updated' }, 202,
+    "pm.test('Edit replayed', () => pm.expect(pm.response.json().command.id).to.eql(pm.environment.get('step3CommandId')));", step3Guard), 'step3EditKey'),
+  keyed(request('Queue simulation-only email consent', 'PATCH', 'customers/{{salesCustomerId}}/privacy', 'sales', { siteId: '{{siteId}}', privacy: { do_not_contact: false, email: 'granted', sms: 'unknown', call: 'unknown' } }, 202, commandSaved, step3Guard + newKey('step3PrivacyKey')), 'step3PrivacyKey'),
+  request('Confirm privacy through simulator', 'POST', 'admin/integration/commands/{{step3CommandId}}/process', 'admin', {}, 201, '', step3Guard),
+  request('Read confirmed consent', 'GET', 'customers/{{salesCustomerId}}?siteId={{siteId}}', 'sales', undefined, 200,
+    "pm.test('Email consent confirmed', () => pm.expect(pm.response.json().customer.privacy.email).to.eql('granted'));", step3Guard),
+  request('ADMIN validates customer reassignment', 'PATCH', 'customers/{{salesCustomerId}}/assignment', 'admin', { siteId: '{{siteId}}', assignedTo: '{{salesUserId}}' }, 200, '', step3Guard),
+], 'Optional simulation-only workflow. Set runStep3Tests=true and run after confirmed SALES customer creation. No real Pentana write. Clear the flag after testing. Command statuses expose pending/confirmed/rejected/needs-review results.');
+const taskSaved = save('step3TaskId', 'pm.response.json().task.id') + '\n' + save('step3TaskVersion', 'pm.response.json().task.version');
+folder('20 Task management — edit reschedule reassign cancel', [
+  request('ADMIN discovers active same-site assignees', 'GET', 'sites/{{siteId}}/staff?limit=10&offset=0', 'admin', undefined, 200,
+    "pm.test('Assignee profiles are sanitized', () => pm.expect(pm.response.json().staff.every(item => !Object.prototype.hasOwnProperty.call(item, 'email'))).to.eql(true));", step3Guard),
+  request('Default SALES cannot enumerate assignees', 'GET', 'sites/{{siteId}}/staff?limit=10', 'sales', undefined, 403, '', step3Guard),
+  request('Create disposable follow-up', 'POST', 'tasks', 'sales', { siteId: '{{siteId}}', customerId: '{{salesCustomerId}}', title: 'Step 3 callback', dueAt: '{{dueAt}}' }, 201, taskSaved, step3Guard + "\npm.variables.set('dueAt', new Date().toISOString());"),
+  request('Read task version', 'GET', 'tasks/{{step3TaskId}}?siteId={{siteId}}', 'sales', undefined, 200, taskSaved, step3Guard),
+  request('Edit and reschedule as a call', 'PATCH', 'tasks/{{step3TaskId}}', 'sales', { siteId: '{{siteId}}', version: 0, title: 'Updated callback', kind: 'call', dueAt: '{{dueAt}}', priority: 'high' }, 200, taskSaved, step3Guard + `\npm.request.body.update(JSON.stringify({ siteId: pm.environment.get('siteId'), version: Number(pm.environment.get('step3TaskVersion')), title: 'Updated callback', kind: 'call', dueAt: new Date().toISOString(), priority: 'high' }));`),
+  request('Reject stale task edit', 'PATCH', 'tasks/{{step3TaskId}}', 'sales', { siteId: '{{siteId}}', version: 0, title: 'Stale edit' }, 409, '', step3Guard),
+  request('ADMIN reassigns task to SERVICE', 'PATCH', 'tasks/{{step3TaskId}}', 'admin', {}, 200, taskSaved, step3Guard + `\npm.request.body.update(JSON.stringify({ siteId: pm.environment.get('siteId'), version: Number(pm.environment.get('step3TaskVersion')), assignedTo: pm.environment.get('serviceUserId') }));`),
+  request('Previous owner cannot read reassigned task', 'GET', 'tasks/{{step3TaskId}}?siteId={{siteId}}', 'sales', undefined, 404, '', step3Guard),
+  request('SERVICE sees assigned call in My Day', 'GET', 'my-day?siteId={{siteId}}&bucket=calls', 'service', undefined, 200, '', step3Guard),
+  request('SERVICE cancels current task', 'PATCH', 'tasks/{{step3TaskId}}/cancel', 'service', {}, 200, taskSaved, step3Guard + `\npm.request.body.update(JSON.stringify({ siteId: pm.environment.get('siteId'), version: Number(pm.environment.get('step3TaskVersion')), reason: 'Postman disposable test completed' }));`),
+  request('Cancelled task cannot be completed', 'PATCH', 'tasks/{{step3TaskId}}/complete?siteId={{siteId}}', 'service', undefined, 400, '', step3Guard),
+], 'Run after folder 19 with three same-site test roles. Reassignment validates the new assignee current site access. Cancellation removes work from My Day.');
+const messageSaved = save('step3MessageId', 'pm.response.json().message.id') + '\n' + save('step3MessageVersion', 'pm.response.json().message.version');
+const simulatedMailGuard = step3Guard + `\nif (pm.environment.get('runStep3Tests') === 'true' && pm.environment.get('messagingSimulationVerified') !== 'true') throw new Error('Run messaging simulation verification first; live SMTP sends are excluded from this collection workflow.');`;
+folder('21 Customer messaging — email simulation', [
+  request('Verify messaging simulation transport', 'GET', 'messaging/status', 'sales', undefined, 200,
+    `pm.environment.set('messagingSimulationVerified', 'false'); const data = pm.response.json(); if (data.mode !== 'simulated') throw new Error('Set MESSAGE_TRANSPORT=simulated for this development workflow'); pm.environment.set('messagingSimulationVerified', 'true');`, step3Guard),
+  keyed(request('Create email draft', 'POST', 'customers/{{salesCustomerId}}/messages', 'sales', { siteId: '{{siteId}}', subject: 'Postman customer email', body: 'Simulated customer update only.' }, 201, messageSaved, simulatedMailGuard + newKey('step3DraftKey')), 'step3DraftKey'),
+  keyed(request('Replay draft without duplication', 'POST', 'customers/{{salesCustomerId}}/messages', 'sales', { siteId: '{{siteId}}', subject: 'Postman customer email', body: 'Simulated customer update only.' }, 201, '', simulatedMailGuard), 'step3DraftKey'),
+  request('Edit email draft', 'PATCH', 'messages/{{step3MessageId}}', 'sales', {}, 200, messageSaved, simulatedMailGuard + `\npm.request.body.update(JSON.stringify({ siteId: pm.environment.get('siteId'), version: Number(pm.environment.get('step3MessageVersion')), body: 'Updated simulation-only customer email.' }));`),
+  keyed(request('Explicitly send through simulator', 'POST', 'messages/{{step3MessageId}}/send', 'sales', {}, 202,
+    save('step3ProviderId', 'pm.response.json().message.provider_id') + "\npm.test('Accepted, not delivered', () => pm.expect(pm.response.json().message.status).to.eql('accepted'));", simulatedMailGuard + newKey('step3SendKey') + `\npm.request.body.update(JSON.stringify({ siteId: pm.environment.get('siteId'), version: Number(pm.environment.get('step3MessageVersion')) }));`), 'step3SendKey'),
+  keyed(request('Replay same send without another submission', 'POST', 'messages/{{step3MessageId}}/send', 'sales', {}, 202, '', simulatedMailGuard + `\npm.request.body.update(JSON.stringify({ siteId: pm.environment.get('siteId'), version: Number(pm.environment.get('step3MessageVersion')) }));`), 'step3SendKey'),
+  request('ADMIN records simulation delivery evidence', 'POST', 'messages/{{step3MessageId}}/delivery', 'admin', { siteId: '{{siteId}}', status: 'delivered', providerId: '{{step3ProviderId}}', evidence: 'Simulation-only Postman delivery confirmation' }, 201, '', simulatedMailGuard),
+  request('Read paginated customer message outcomes', 'GET', 'customers/{{salesCustomerId}}/messages?siteId={{siteId}}&limit=10', 'sales', undefined, 200, '', simulatedMailGuard),
+  request('Read shared timeline with email outcomes', 'GET', 'customers/{{salesCustomerId}}/activity?siteId={{siteId}}&limit=100', 'service', undefined, 200, '', simulatedMailGuard),
+], 'Email only. No SMTP credentials belong in Postman. This workflow requires MESSAGE_TRANSPORT=simulated and ALLOW_SIMULATED_INTEGRATION=true. Actual SMTP must be configured separately and sent individually after verified real consent. SMTP accepted is not confirmed inbox delivery. Recovery and resolution APIs are documented in Swagger.');
+environment.values.push(...['salesLeadId', 'salesLeadVersion'].map(key => ({ key, value: '', type: 'default', enabled: true })));
+folder('25 Sales enquiries', [
+  request('Create SALES enquiry with next follow-up', 'POST', 'sales/leads', 'sales', { siteId: '{{siteId}}', customerId: '{{salesCustomerId}}', title: 'Website SUV enquiry', source: 'Website', vehicleInterest: 'Family SUV', followUpAt: '2026-12-01T09:00:00.000Z' }, 201,
+    "const lead = pm.response.json().lead; writeVariable('salesLeadId', lead.id); writeVariable('salesLeadVersion', lead.version);", guard(['salesToken', 'siteId', 'salesCustomerId']) + "\npm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });"),
+  request('List own SALES enquiries', 'GET', 'sales/leads?siteId={{siteId}}&limit=20&offset=0', 'sales', undefined, 200, "pm.test('Own visibility', () => pm.expect(pm.response.json().visibility).to.eql('own'));", guard(['salesToken', 'siteId'])),
+  request('Read SALES enquiry', 'GET', 'sales/leads/{{salesLeadId}}?siteId={{siteId}}', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('Qualify SALES enquiry', 'PATCH', 'sales/leads/{{salesLeadId}}', 'sales', { siteId: '{{siteId}}', version: 0, status: 'qualified' }, 200,
+    "writeVariable('salesLeadVersion', pm.response.json().lead.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'salesLeadVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('salesLeadVersion')); pm.request.body.update(JSON.stringify(body));"),
+  request('ADMIN team enquiries', 'GET', 'sales/leads?siteId={{siteId}}&limit=20&offset=0', 'admin', undefined, 200, '', guard(['adminToken', 'siteId'])),
+  request('SERVICE cannot read Sales enquiries', 'GET', 'sales/leads?siteId={{siteId}}', 'service', undefined, 403, '', guard(['serviceToken', 'siteId'])),
+], 'Local Sales enquiries linked to confirmed customers. Optional initial follow-up creates a normal My Day task. Enquiry ownership and existing task ownership are managed independently. Real Pentana scraping is not used.');
+
+folder('26 Sales pipeline and progress', [
+  request('Read SALES pipeline counts and first page', 'GET', 'sales/pipeline?siteId={{siteId}}&limit=20&offset=0', 'sales', undefined, 200, '', guard(['salesToken', 'siteId'])),
+  request('Read current enquiry version before moving', 'GET', 'sales/leads/{{salesLeadId}}?siteId={{siteId}}', 'sales', undefined, 200, "writeVariable('salesLeadVersion', pm.response.json().lead.version);", guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('Move enquiry to test drive with progress note', 'PATCH', 'sales/pipeline/{{salesLeadId}}/stage', 'sales', { siteId: '{{siteId}}', version: 0, stage: 'test_drive', reason: 'Customer requested a test drive' }, 200,
+    "writeVariable('salesLeadVersion', pm.response.json().lead.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'salesLeadVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('salesLeadVersion')); pm.request.body.update(JSON.stringify(body));"),
+  request('List test-drive pipeline enquiries', 'GET', 'sales/pipeline?siteId={{siteId}}&stage=test_drive&limit=20', 'sales', undefined, 200, '', guard(['salesToken', 'siteId'])),
+  request('Read paginated enquiry progress history', 'GET', 'sales/pipeline/{{salesLeadId}}/history?siteId={{siteId}}&limit=10&offset=0', 'sales', undefined, 200,
+    "pm.test('History includes authors and timestamps', () => pm.response.json().history.forEach(event => { pm.expect(event.author.id).to.be.a('string'); pm.expect(event.occurredAt).to.be.a('string'); }));", guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('Reject pipeline move without progress note', 'PATCH', 'sales/pipeline/{{salesLeadId}}/stage', 'sales', { siteId: '{{siteId}}', version: 0, stage: 'won', reason: '' }, 400, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('SERVICE cannot view pipeline', 'GET', 'sales/pipeline?siteId={{siteId}}', 'service', undefined, 403, '', guard(['serviceToken', 'siteId'])),
+  request('ADMIN pipeline team view', 'GET', 'sales/pipeline?siteId={{siteId}}&limit=20', 'admin', undefined, 200, '', guard(['adminToken', 'siteId'])),
+], 'Run folder 25 first. Pipeline uses local CRM enquiries, optimistic versions and progress notes. Won does not create a deal. Existing closed enquiries remain available; reopen with a documented stage move. Refresh the version before new moves; uncertain retries should be checked in history before resubmission.');
+
+environment.values.push(...['stockBrandId', 'stockVehicleId', 'stockVersion'].map(key => ({ key, value: '', type: 'default', enabled: true })));
+folder('27 Stock matching', [
+  request('Select a Sales-accessible mapped site brand', 'GET', 'sites/{{siteId}}/brands?limit=100', 'sales', undefined, 200,
+    "const brand = pm.response.json().brands.find(item => item.permissions.includes('sales.read')); if (!brand) throw new Error('Map a brand to this site and ensure Sales has brand access before running stock tests.'); writeVariable('stockBrandId', brand.id);", guard(['salesToken', 'siteId'])),
+  request('ADMIN add simulated stock vehicle', 'POST', 'sales/stock', 'admin', { siteId: '{{siteId}}', brandId: '{{stockBrandId}}', stockNumber: 'POSTMAN-STOCK', make: 'Kia', model: 'Sportage', year: 2026, odometerKm: 150, bodyType: 'SUV', fuelType: 'Petrol', transmission: 'Automatic', priceCents: 3499000 }, 201,
+    "const vehicle = pm.response.json().vehicle; writeVariable('stockVehicleId', vehicle.id); writeVariable('stockVersion', vehicle.version);", guard(['adminToken', 'siteId', 'stockBrandId']) + "\nconst body = JSON.parse(pm.request.body.raw); body.stockNumber = 'POSTMAN-' + pm.variables.replaceIn('{{$guid}}'); pm.request.body.update(JSON.stringify(body)); pm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });"),
+  request('SALES filter available SUV stock by price', 'GET', 'sales/stock?siteId={{siteId}}&status=available&bodyType=SUV&maxPriceCents=3500000&limit=12', 'sales', undefined, 200, '', guard(['salesToken', 'siteId'])),
+  request('Read stock vehicle details', 'GET', 'sales/stock/{{stockVehicleId}}?siteId={{siteId}}', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'stockVehicleId'])),
+  request('Refresh enquiry version for shortlist', 'GET', 'sales/leads/{{salesLeadId}}?siteId={{siteId}}', 'sales', undefined, 200, "writeVariable('salesLeadVersion', pm.response.json().lead.version);", guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('Shortlist vehicle against enquiry', 'PATCH', 'sales/leads/{{salesLeadId}}/stock', 'sales', { siteId: '{{siteId}}', version: 0, stockId: '{{stockVehicleId}}', action: 'add', note: 'Matches the requested family SUV' }, 200,
+    "writeVariable('salesLeadVersion', pm.response.json().lead.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'stockVehicleId', 'salesLeadVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('salesLeadVersion')); pm.request.body.update(JSON.stringify(body));"),
+  request('Read matching note in enquiry history', 'GET', 'sales/pipeline/{{salesLeadId}}/history?siteId={{siteId}}&limit=10', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('SERVICE cannot read Sales stock', 'GET', 'sales/stock?siteId={{siteId}}', 'service', undefined, 403, '', guard(['serviceToken', 'siteId'])),
+], 'Development simulation only. Run folders 25–26 first and configure a Sales-accessible mapped brand in Settings. Stock shortlist is advisory and does not reserve a vehicle. Vehicles and enquiries must belong to the same authorised site/mode. Admin stock edits require all editable vehicle fields plus version/status. Real stock scraping is deferred.');
+
+environment.values.push(...['appraisalId', 'appraisalVersion'].map(key => ({ key, value: '', type: 'default', enabled: true })));
+folder('28 Trade-in appraisals', [
+  request('Create draft trade-in appraisal', 'POST', 'sales/leads/{{salesLeadId}}/appraisals', 'sales', { siteId: '{{siteId}}', make: 'Toyota', model: 'Corolla', year: 2020, odometerKm: 85000, registration: 'TEST123', conditionNotes: 'Good condition, minor bumper scratches' }, 201,
+    "const appraisal = pm.response.json().appraisal; writeVariable('appraisalId', appraisal.id); writeVariable('appraisalVersion', appraisal.version);", guard(['salesToken', 'siteId', 'salesLeadId']) + "\npm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });"),
+  request('Read enquiry appraisals', 'GET', 'sales/leads/{{salesLeadId}}/appraisals?siteId={{siteId}}&limit=10&offset=0', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('Refresh current appraisal version', 'GET', 'sales/leads/{{salesLeadId}}/appraisals/{{appraisalId}}?siteId={{siteId}}', 'sales', undefined, 200, "writeVariable('appraisalVersion', pm.response.json().appraisal.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'appraisalId'])),
+  request('Record internal trade-in valuation', 'PATCH', 'sales/leads/{{salesLeadId}}/appraisals/{{appraisalId}}', 'sales', { siteId: '{{siteId}}', version: 0, make: 'Toyota', model: 'Corolla', year: 2020, odometerKm: 85000, registration: 'TEST123', conditionNotes: 'Good condition, minor bumper scratches', status: 'valued', valuationCents: 1450050, valuationNotes: 'Local estimate based on mileage and inspection' }, 200,
+    "writeVariable('appraisalVersion', pm.response.json().appraisal.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'appraisalId', 'appraisalVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('appraisalVersion')); pm.request.body.update(JSON.stringify(body));"),
+  request('Read appraisal progress history', 'GET', 'sales/pipeline/{{salesLeadId}}/history?siteId={{siteId}}&limit=10', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('SERVICE cannot read trade-in appraisals', 'GET', 'sales/leads/{{salesLeadId}}/appraisals?siteId={{siteId}}', 'service', undefined, 403, '', guard(['serviceToken', 'siteId', 'salesLeadId'])),
+], 'Run folder 25 first with an open enquiry. Appraisals are local internal assessments, not binding offers or source writes. Valued requires an integer-cent AUD valuation and supporting notes; Withdrawn requires a reason. Vehicle editing requires all vehicle fields plus current appraisal version. Appraisal changes also increment the enquiry version; refresh it before pipeline/shortlist edits.');
+
+environment.values.push(...['salesDealId', 'salesDealVersion'].map(key => ({ key, value: '', type: 'default', enabled: true })));
+const dealVersionPre = role => guard([`${role}Token`, 'siteId', 'salesLeadId', 'salesDealId', 'salesDealVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('salesDealVersion')); pm.request.body.update(JSON.stringify(body));";
+folder('29 Deal proposals and approval', [
+  request('Create internal deal proposal with valued trade-in', 'POST', 'sales/leads/{{salesLeadId}}/deals', 'sales', { siteId: '{{siteId}}', stockId: '{{stockVehicleId}}', appraisalId: '{{appraisalId}}', salePriceCents: 3499000, discountCents: 100000, feesCents: 50000, notes: 'Internal proposal; fees entered manually; trade-in uses appraisal' }, 201,
+    "const deal = pm.response.json().deal; writeVariable('salesDealId', deal.id); writeVariable('salesDealVersion', deal.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'stockVehicleId', 'appraisalId']) + "\npm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });"),
+  request('Read scoped enquiry proposals', 'GET', 'sales/leads/{{salesLeadId}}/deals?siteId={{siteId}}&limit=10', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('Read current deal and capture version', 'GET', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}?siteId={{siteId}}', 'sales', undefined, 200, "writeVariable('salesDealVersion', pm.response.json().deal.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'salesDealId'])),
+  request('Submit proposal for Admin review', 'PATCH', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/status', 'sales', { siteId: '{{siteId}}', version: 0, action: 'submit', note: 'Pricing ready for internal review' }, 200, "writeVariable('salesDealVersion', pm.response.json().deal.version);", dealVersionPre('sales')),
+  request('SALES cannot approve a proposal', 'PATCH', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/status', 'sales', { siteId: '{{siteId}}', version: 0, action: 'approve', note: 'Sales approval is not permitted' }, 403, '', dealVersionPre('sales')),
+  request('ADMIN approve internal proposal', 'PATCH', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/status', 'admin', { siteId: '{{siteId}}', version: 0, action: 'approve', note: 'Reviewed pricing and trade-in assessment' }, 200, "writeVariable('salesDealVersion', pm.response.json().deal.version);", dealVersionPre('admin')),
+  request('Read approval in progress history', 'GET', 'sales/pipeline/{{salesLeadId}}/history?siteId={{siteId}}&limit=20', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+  request('SERVICE cannot read Sales deals', 'GET', 'sales/leads/{{salesLeadId}}/deals?siteId={{siteId}}', 'service', undefined, 403, '', guard(['serviceToken', 'siteId', 'salesLeadId'])),
+], 'Run folders 25, 27 and 28 first with an open enquiry, available stock and a valued appraisal. Proposals are local internal records, not binding agreements/payments/reservations. Stock/appraisal changes require refreshing draft pricing; a submitted proposal must be rejected or cancelled before revising. Admin approval uses sales.approve_deals. Approving does not close the enquiry or change stock availability.');
+
+environment.values.push(...['reservationId', 'reservationVersion', 'reservationExpiresAt'].map(key => ({ key, value: '', type: 'default', enabled: true })));
+folder('30 Stock reservations', [
+  request('Refresh approved deal version before reservation', 'GET', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}?siteId={{siteId}}', 'sales', undefined, 200,
+    "const deal = pm.response.json().deal; pm.test('Deal is approved', () => pm.expect(deal.status).to.eql('approved')); writeVariable('salesDealVersion', deal.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'salesDealId'])),
+  request('Reserve vehicle for approved deal for 24 hours', 'POST', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/reservations', 'sales', { siteId: '{{siteId}}', dealVersion: 0, expiresAt: '{{reservationExpiresAt}}', note: 'Local stock hold for approved proposal' }, 201,
+    "const hold = pm.response.json().reservation; writeVariable('reservationId', hold.id); writeVariable('reservationVersion', hold.version); writeVariable('reservationExpiresAt', hold.expires_at);",
+    guard(['salesToken', 'siteId', 'salesLeadId', 'salesDealId', 'salesDealVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.dealVersion = Number(readVariable('salesDealVersion')); body.expiresAt = new Date(Date.now() + 86400000).toISOString(); pm.request.body.update(JSON.stringify(body)); pm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });"),
+  request('Read reservation history and current hold', 'GET', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/reservations?siteId={{siteId}}&limit=5', 'sales', undefined, 200,
+    "pm.test('Current hold is active', () => pm.expect(pm.response.json().active.status).to.eql('active'));", guard(['salesToken', 'siteId', 'salesLeadId', 'salesDealId'])),
+  request('Stock detail shows reserved availability without customer disclosure', 'GET', 'sales/stock/{{stockVehicleId}}?siteId={{siteId}}', 'sales', undefined, 200,
+    "const vehicle = pm.response.json().vehicle; pm.test('Vehicle is reserved', () => pm.expect(vehicle.availability).to.eql('reserved')); pm.test('Stock summary does not expose customer/deal', () => { pm.expect(vehicle.reservation).not.to.have.property('customerId'); pm.expect(vehicle.reservation).not.to.have.property('dealId'); });", guard(['salesToken', 'siteId', 'stockVehicleId'])),
+  request('List reserved stock', 'GET', 'sales/stock?siteId={{siteId}}&status=reserved&limit=12', 'sales', undefined, 200, '', guard(['salesToken', 'siteId'])),
+  request('SERVICE cannot read Sales reservations', 'GET', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/reservations?siteId={{siteId}}', 'service', undefined, 403, '', guard(['serviceToken', 'siteId', 'salesLeadId', 'salesDealId'])),
+  request('Reject stale reservation release version', 'PATCH', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/reservations/{{reservationId}}/release', 'sales', { siteId: '{{siteId}}', version: 999999, note: 'Intentional stale release check' }, 409, '', guard(['salesToken', 'siteId', 'salesLeadId', 'salesDealId', 'reservationId'])),
+  request('Release local reservation', 'PATCH', 'sales/leads/{{salesLeadId}}/deals/{{salesDealId}}/reservations/{{reservationId}}/release', 'sales', { siteId: '{{siteId}}', version: 0, note: 'Postman verification finished; release vehicle' }, 200,
+    "writeVariable('reservationVersion', pm.response.json().reservation.version);", guard(['salesToken', 'siteId', 'salesLeadId', 'salesDealId', 'reservationId', 'reservationVersion']) + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('reservationVersion')); pm.request.body.update(JSON.stringify(body));"),
+  request('Read reservation progress events', 'GET', 'sales/pipeline/{{salesLeadId}}/history?siteId={{siteId}}&limit=20', 'sales', undefined, 200, '', guard(['salesToken', 'siteId', 'salesLeadId'])),
+], 'Run folder 29 first with an approved proposal and fresh stock/appraisal snapshots. Local reservations expire within 7 days and do not write to Pentana or process payment. Only one active hold is permitted per vehicle. This workflow releases its test hold at the end. Deal cancellation releases its hold atomically. Expiry is enforced on reads, creation and a periodic worker; no TTL deletes audit history.');
+
 const collection = {
   info: { _postman_id: randomUUID(), name: 'Good Showroom — Supabase Auth and MongoDB CRM',
     schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',

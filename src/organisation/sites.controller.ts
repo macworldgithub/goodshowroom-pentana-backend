@@ -1,8 +1,8 @@
-import { BadRequestException, Body, Controller, Get, Inject, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Inject, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { ClientSession } from 'mongodb';
-import { AccessService, grantsForBrand } from '../auth/access.service.js';
+import { AccessService, grantsForBrand, grantsForSite } from '../auth/access.service.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard.js';
 import { identifiers, text, timezone, uuid } from '../auth/validation.js';
@@ -33,6 +33,25 @@ export class SitesController {
     if (!brandIds.length) return;
     const brands = await this.mongo.brands.find({ organisation_id: organisationId, id: { $in: brandIds } }, { session }).toArray();
     if (brands.length !== brandIds.length) throw new BadRequestException('Every brand must belong to this organisation');
+  }
+
+  @Get('sites/:id/staff')
+  @ApiPagination()
+  async staff(@Req() request: AuthenticatedRequest, @Param('id') id: string, @Query('offset') offset?: string, @Query('limit') limit?: string) {
+    uuid(id, 'siteId'); const page = pagination(offset, limit);
+    return this.mongo.transaction(async session => {
+      const site = await this.access.requireSite(request, id, 'customers.read', session);
+      if (!(await this.access.hasSitePermission(request, id, 'customers.assign', session)) && !(await this.access.hasSitePermission(request, id, 'tasks.assign', session)) && !(await this.access.hasSitePermission(request, id, 'sales.assign_leads', session))) throw new ForbiddenException('Assignment permission is required');
+      const grouped = await this.mongo.memberships.aggregate<{ userId: string; grants: import('../database/models.js').Membership[] }>([
+        { $match: { organisation_id: site.organisation_id, status: 'active', $or: [{ role: 'ADMIN', site_id: null }, { role: { $in: ['SALES', 'SERVICE'] }, site_id: id }] } },
+        { $group: { _id: '$user_id', grants: { $push: '$$ROOT' } } }, { $sort: { _id: 1 } }, { $skip: page.offset }, { $limit: page.limit + 1 },
+        { $project: { _id: 0, userId: '$_id', grants: 1 } },
+      ], { session }).toArray();
+      const result = pageResult(grouped, page);
+      const profiles = await this.mongo.users.find({ _id: { $in: result.rows.map(row => row.userId) } }, { session, projection: { full_name: 1 } }).toArray();
+      return { staff: result.rows.map(row => ({ userId: row.userId, fullName: profiles.find(profile => profile._id === row.userId)?.full_name ?? null,
+        permissions: permissionsFor(grantsForSite(row.grants, site)) })), pagination: result.pagination };
+    });
   }
 
   @Get('admin/sites')

@@ -1,5 +1,17 @@
 # Good Showroom Postman Tests
 
+Reservations are in **30 Stock reservations**, following approved proposals in folder 29. The test hold is released at the end. See [reservation workflow and API details](../STOCK-RESERVATIONS.md).
+
+Deal proposals and Admin approval are in **29 Deal proposals and approval**. Use an open enquiry, available stock and a Valued appraisal from folders 25, 27 and 28. See [proposal workflow and API details](../DEAL-PROPOSALS.md).
+
+Trade-in appraisals are in **28 Trade-in appraisals**. Start with an open Sales enquiry. See [appraisal workflow and API details](../TRADE-IN-APPRAISALS.md).
+
+Stock matching is in **27 Stock matching**, after folders 25–26. Development simulation and a Sales-accessible brand mapped to the selected site are required. See [stock workflow and API details](../STOCK-MATCHING.md).
+
+Pipeline stages and history are in **26 Sales pipeline and progress**, following folder 25. Read the latest enquiry version before moving a stage. See [pipeline workflow and API details](../SALES-PIPELINE.md).
+
+Sales enquiries are in **25 Sales enquiries**. Sign in, select the correct site and confirm the Sales customer first. The folder creates a local enquiry and initial follow-up, saves salesLeadId/salesLeadVersion, reads and qualifies it, and verifies SERVICE denial. See [Sales enquiry API details](../SALES-ENQUIRIES.md).
+
 ## Quick start with test defaults
 
 Import `Good-Showroom.postman_collection.json` and
@@ -195,3 +207,31 @@ now checks ownership, open status, counts, page limits, selected site-local date
 next-page offset, and invalid bucket. Live requests were not rerun by the agent.
 Source-mode, team-permission changes, and orphaned-link exclusion are verified by
 MongoDB integration tests. See IMPLEMENTATION-PLAN.md for the unfinished Step 3 work.
+
+Notes/calls update (13 October 2026): collection now has 21 folders and 155 requests.
+Folder 18 logs internal notes and calls, creates a promised callback, verifies
+idempotent replay, reads shared journal/timeline, and covers invalid input/auth.
+Run after folder 05 produces salesCustomerId. SERVICE shared-journal request requires
+same-site access. Keep saved salesNoteKey/salesCallKey/journalFollowUpDueAt for
+retries; clear them to create new samples. No actual dialling or Pentana write occurs.
+Notes/calls require a bearer token and Idempotency-Key; shared entries are append-only.
+
+Step 3 completion update: 24 folders, 184 requests. Folders 19–21 cover queued
+contact edits/consent/shared change states, task editing/rescheduling/reassignment/
+cancellation, and email drafts/explicit simulation sending/replay/delivery history.
+Set runStep3Tests=true after the confirmed SALES customer workflow, then run these
+folders in order. Backend must use INTEGRATION_MODE=simulated,
+ALLOW_SIMULATED_INTEGRATION=true, INTEGRATION_WRITES_ENABLED=true and
+MESSAGE_TRANSPORT=simulated. Restart after configuration changes. Both server modes
+are verified before sample mutations/sends; the email workflow refuses live SMTP.
+Turn the flag off afterward. SMTP credentials belong on the server, never Postman.
+Live SMTP remains unconfigured/unverified; SMS needs its own provider. See
+../CUSTOMER-360.md for recovery/reconciliation APIs and real SMTP setup.
+Collection scripts parse and five variable-scope checks pass; live Postman requests
+were not run. The PRIVATE environment preserves existing credentials/runtime IDs.
+
+Frontend integration update: 24 folders, 186 requests. Folder 20 now includes the
+assignment-authorized staff directory and default SALES rejection. These endpoints
+support named assignee selection in the frontend. PRIVATE credentials/runtime IDs
+were preserved; use valid existing accounts rather than assuming sample logins exist.
+The active frontend now exercises Steps 1–3; see ../my-app/FRONTEND-INTEGRATION.md.

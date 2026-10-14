@@ -1,5 +1,41 @@
 # Good Showroom — implementation status and remaining backend plan
 
+## 14 October 2026 — Step 4, Reservations
+
+Implemented approved-deal local vehicle holds, future expiry (up to seven days), one-active-hold protection, idempotent creation, versioned release, atomic deal cancellation, periodic/lazy expiry and progress history. Stock filters and safe expiry summaries distinguish reserved from available vehicles. Active holds protect vehicle/appraisal edits. The frontend is connected at Sales desk → Deals → Reservation. Postman folder 30 covers it. See [STOCK-RESERVATIONS.md](STOCK-RESERVATIONS.md).
+
+Next: delivery checklists and full Sales workflow verification. These are local holds only; real Pentana write-back remains last. Signed-in browser walkthrough remains pending.
+
+## 13 October 2026 — Step 4, Deal proposals
+
+Implemented enquiry/customer/vehicle-linked internal proposals, optional valued trade-ins, server-calculated integer-cent AUD totals, versioned editing, submission and ADMIN approval/rejection/cancellation, fresh stock/appraisal checks and transactional progress history. Sales desk opens the connected Deals workflow. Postman folder 29 covers it. See [DEAL-PROPOSALS.md](DEAL-PROPOSALS.md).
+
+Approval is internal only: no agreement, payment, stock reservation, enquiry closure or source write occurs. Next: reservations, then delivery checklists and final Sales workflow verification. Finance/tax/loan settlement calculations are not included; fee totals are entered manually. Real Pentana scraping remains last.
+
+## 13 October 2026 — Step 4, Trade-in appraisals
+
+Implemented enquiry/customer-linked local appraisals, vehicle inspection notes, internal integer-cent AUD valuations, Draft/Valued/Withdrawn states, idempotent creation, version protection and transactional progress history with valuation snapshots. Sales desk opens the connected appraisal register; Postman folder 28 covers it. See [TRADE-IN-APPRAISALS.md](TRADE-IN-APPRAISALS.md).
+
+Next: deals and reservations, then delivery checklists. Appraisals are internal estimates and do not create offers, acquired stock, financial transactions or source writes. Real Pentana scraping remains last.
+
+## 13 October 2026 — Step 4, Stock matching
+
+Implemented a brand/site-scoped simulated vehicle register, filtered/paginated stock reads, ADMIN maintenance, integer-cent AUD prices, availability/version checks and enquiry shortlists with progress notes. Stock match is connected on the frontend, and Postman folder 27 covers the workflow. See [STOCK-MATCHING.md](STOCK-MATCHING.md).
+
+Stock maintenance currently supports development simulation only. Shortlisting is advisory and does not reserve stock. Next: appraisals, followed by deals/reservations and delivery checklists. Real Pentana stock scraping remains deferred to the final integration step.
+
+## 13 October 2026 — Step 4, Sales pipeline
+
+Implemented pipeline stages, stage counts and filtering, Won/Lost enquiry outcomes, documented backward moves/reopening, optimistic version protection and paginated progress history with authors and timestamps. The frontend Sales desk is connected, and Postman folder 26 covers the workflow. Existing enquiry stages are retained without destructive migration. See [SALES-PIPELINE.md](SALES-PIPELINE.md).
+
+Next Sales increment: stock matching, followed by appraisals, deals/reservations and delivery checklists. Real Pentana scraping remains last. Won records an enquiry outcome only; deals and reservations are not implemented by this increment.
+
+## 13 October 2026 — Step 4, Sales enquiries
+
+Implemented local customer-linked enquiries: create/list/detail/edit, enquiry source and vehicle interest, new/contacted/qualified/closed status, salesperson ownership, own/team visibility, validated assignment, version protection, idempotent creation and transactional audit records. Optional initial follow-up uses the existing task system and My Day. The frontend Sales enquiries page is connected, and Postman folder 25 covers the workflow. See [SALES-ENQUIRIES.md](SALES-ENQUIRIES.md).
+
+This completes the first Sales increment only. Next: pipeline stages and progress history, then stock/appraisals, deals/reservations and delivery checklists. Existing follow-up task ownership is managed separately from enquiry ownership. Real Pentana scraping remains the final integration step. Database tests and frontend production build passed; signed-in browser verification is pending because the available local browser session is signed out.
+
 Reviewed 9 October 2026 against the backend source, generated Postman collection,
 existing tests, and the supplied Good Showroom scope dated 1 October 2026.
 
@@ -526,3 +562,119 @@ Next functional increment remains backend notes and call logging, then customer
 editing/privacy and expanded task management. Do not mark the overall Step 3 complete
 until its remaining acceptance requirements are implemented and tested. Actual
 Pentana/eraPower scraping for reads AND writes remains LAST.
+
+## Step 3 increment: internal notes and call logging — 13 October 2026
+
+Backend-only implementation completed for internal notes and actual/attempted call
+logs. No frontend file was changed; Ahmed's restored frontend remains intact.
+Actual Pentana/eraPower scraping remains LAST, for both reads and writes.
+
+New routes:
+- POST /api/customers/:id/notes: append a site-shared internal note.
+- POST /api/customers/:id/calls: record direction, outcome, summary, actual time.
+- GET /api/customers/:id/journal: paginated shared notes/call logs.
+
+Both writes require Idempotency-Key and current customer read/write permissions.
+They are application-owned, not source customer changes, and do not dial/send/write
+externally. Calls can optionally create a promised callback task assigned to the
+recorder. The entry, task, and audits are atomic; retries cannot duplicate them.
+Follow-up task references remain subject to current task ownership/team permission,
+while note/call content is site-shared. Unknown/other-site/other-mode customers and
+suspended access are rejected. No journal edit/delete endpoints were introduced.
+
+Customer activity now includes note/call content through explicit safe fields,
+actual occurrence time, recorded time, and author attribution. Raw audit metadata,
+request hashes/keys, and unreadable follow-up references remain excluded. Backdated
+calls are ordered by occurrence time rather than recording time. My Day includes
+promised callback tasks automatically; logging does not complete an earlier task.
+
+Verification: 84 unit tests, 4 endpoint tests, and 42 temporary-MongoDB integration
+tests pass; build and lint pass. Tests include input validation, concurrent duplicate
+requests, shared journal visibility, hidden task references, actual timestamps,
+source/site isolation, suspension, and rollback on audit failure. No live Postman,
+Pentana, dialling, or email request was executed by this increment.
+
+Postman folder 18 Customer 360 — internal notes and call logging added. Collection
+now has 21 folders and 155 requests. Scripts parse and five scope checks pass;
+local/private exports refreshed preserving existing private settings/runtime IDs.
+
+Step 3 remains PARTIAL. Customer detail/activity, internal notes/call logs/promised
+callbacks, basic tasks and initial My Day are now present. Remaining: customer
+editing through simulated commands, customer reassignment, privacy/consent fields
+and enforcement, task editing/rescheduling/reassignment/cancellation, messaging,
+and associated activity events. Source-owned updates remain simulated until final
+scraping connection. Next increment: customer contact editing through the command
+queue/simulator, with pending/confirmed/rejected/needs-review feedback.
+
+## Step 3 current status — completed backend email scope, 13 October 2026
+
+This section supersedes earlier partial-status snapshots. Backend now includes
+customer detail/shared history, notes/calls/promised callbacks, source-owned contact
+editing and privacy/consent through commands and simulator, validated customer/task
+reassignment, task editing/rescheduling/cancellation, and personal/team My Day.
+Shared paginated change summaries expose pending, confirmed, rejected, failed and
+needs-review states. Lifecycle and submitted email outcomes join the timeline.
+
+Email now supports drafts, explicit sends, current consent/restriction checks,
+configurable SMTP, development simulation, durable send claims, duplicate protection
+and uncertain-outcome review/reconciliation. SMTP acceptance is distinct from
+delivery; ADMIN can record verified delivery/bounce evidence. SMTP credentials
+remain unconfigured; no live email was sent. Automatic delivery webhooks/DSN handling
+depends on a specific provider and is not included in generic SMTP.
+
+Verification: 91 unit tests, 4 endpoint tests and 51 temporary MongoDB integration
+tests pass; backend build passes. Tests cover customer revisions, pending/rejected/
+uncertain edits, consent/do-not-contact, task versions/access/assignment/cancellation,
+email idempotency/recovery, TLS/envelope controls, and Swagger. Postman folders 19–21
+add optional simulation-only workflows. See CUSTOMER-360.md for configuration/routes.
+No live Postman requests or production SMTP delivery verification were performed.
+Lint and Postman syntax/scope checks also pass; current export is 24 folders and
+184 requests. Private credentials/runtime IDs were preserved when refreshing it.
+
+Remaining external/deferred scope:
+- Configure the chosen SMTP server and verify live acceptance/delivery.
+- SMS needs a separate provider; SMTP is email only.
+- Provider-specific automatic delivery processing is a future extension.
+- Frontend screens/integration are outside this backend-only task.
+- Sales/Service inputs join My Day with those future desks; Step 4 Sales is next.
+- Real Pentana/eraPower scraping, mappings and actual write-back acceptance stay LAST.
+
+The current Step 3 backend scope is complete for customer/task workflows and email
+with simulated acceptance. Do not describe SMS or live-provider delivery as complete.
+
+## Frontend/backend integration through Step 3 — 13 October 2026
+
+The formerly deferred frontend integration is now implemented for the existing
+Step 1–3 backend scope. The active screens use authenticated backend APIs instead
+of demo data. Roles/sites/permissions come from /auth/me; login/session refresh,
+sign-out, initial setup, invitations, staff/site/brand administration, source command
+management, Customer 360, tasks, My Day and email drafts/sending/recovery are connected.
+Password recovery/password setting use Supabase Auth and require its own redirect/
+email configuration. Backend SMTP credentials are never copied into frontend config.
+
+Backend additions needed for the UI: a paginated assignment-authorized staff directory
+with sanitized display fields and current site permissions; authorized ADMIN name/email
+metadata in membership lists; worker status in integration info. Existing authentication,
+invitation lifecycle and last-admin protections remain in place.
+
+Verification: frontend build/typecheck/lint and 7 API connection tests pass; backend
+build/lint, 91 unit tests, 4 endpoint tests and 52 MongoDB integration tests pass.
+Postman scripts/scope checks pass; exports now contain 24 folders and 186 requests.
+The user supplied a real Sales browser session. UI checks verified simulator creation/
+confirmation, shared notes/call logs/promised callbacks, contact and privacy confirmation,
+draft persistence/blocked sending, My Day, task editing/rescheduling with reload persistence,
+cancellation/completion and timeline events. Direct Sales access to Settings is denied.
+Real privileged account changes and live provider emails were not exercised by the browser
+walkthrough. The labelled test record/draft/history remain in the development database.
+
+Local runtime: simulator worker enabled to confirm queued development writes. Atlas
+startup DNS failed after restart; the backend was restored with the optional local-only
+start:local:dns command. It changes DNS lookup for that process, preserves TLS validation,
+and does not modify Windows settings. Next production build uses supported Webpack after
+Turbopack failed to start its CSS worker. See ../my-app/FRONTEND-INTEGRATION.md.
+
+Remaining external/deferred scope: live SMTP and Supabase invitation/recovery email
+acceptance, SMS/provider delivery automation, later Sales/Service desks and reporting,
+and actual Pentana/eraPower read/write scraping LAST. No real source scraping or customer
+email was performed by this integration. Do not describe those external dependencies as
+implemented simply because their frontend controls and backend boundaries exist.

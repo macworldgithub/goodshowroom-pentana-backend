@@ -1,8 +1,8 @@
-import type { RecordBase } from '../database/models.js';
+import type { CustomerPrivacy, RecordBase } from '../database/models.js';
 
 // Provisional normalized contract. The scraping runner must translate Pentana UI
 // fields/IDs into these records; no DOM selectors or external status maps are assumed.
-export type CustomerInput = { first_name: string; last_name: string; email: string | null; phone: string | null };
+export type CustomerInput = { first_name: string; last_name: string; email: string | null; phone: string | null; privacy?: CustomerPrivacy };
 export type SourceCustomer = CustomerInput & { external_id: string; revision: string; observed_at: string };
 export type SourceVehicle = { external_id: string; site_external_id: string; brand_external_id: string; vin: string | null; registration: string | null; status: string };
 export type SourceDeal = { external_id: string; customer_external_id: string; vehicle_external_id: string | null; status: string; source_total: string | null; currency: string | null };
@@ -12,7 +12,8 @@ export type IntegrationMode = 'disabled' | 'simulated' | 'scraping';
 export type CommandStatus = 'queued' | 'processing' | 'retry_wait' | 'succeeded' | 'rejected' | 'failed' | 'needs_review';
 export type Command = RecordBase & {
   organisation_id: string; site_id: string; actor_user_id: string; mode: 'simulated' | 'scraping';
-  kind: 'customer.create'; payload: CustomerInput; customer_id: string;
+  kind: 'customer.create' | 'customer.update' | 'customer.privacy_update'; payload: CustomerInput; customer_id: string;
+  external_id?: string; expected_revision?: string;
   idempotency_key: string; request_hash: string; status: CommandStatus; attempts: number;
   available_at: string; updated_at: string; lease_token?: string; lease_expires_at?: string;
   result?: SourceCustomer; error?: { code: string; message: string };

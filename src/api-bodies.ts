@@ -11,12 +11,28 @@ const setupKey: SchemaObject = { type: 'string', example: 'REPLACE_WITH_INITIAL_
 const brandIds: SchemaObject = { type: 'array', nullable: true, maxItems: 100, items: identifier, description: 'Staff access restriction: null/omitted grants all brands mapped to the assigned site. Otherwise provide one or more mapped brand IDs. ADMIN cannot be brand-restricted.' };
 const mappedBrands: SchemaObject = { type: 'array', maxItems: 100, items: identifier, description: 'Brands offered at this site. An empty array removes all brand mappings.' };
 const name: SchemaObject = { type: 'string', minLength: 2, maxLength: 120, example: 'Pilot Brand' };
+const version: SchemaObject = { type: 'integer', minimum: 0, description: 'Copy the current record version; stale edits return 409.' };
+const privacy: SchemaObject = { type: 'object', required: ['do_not_contact', 'email', 'sms', 'call'], properties: {
+  do_not_contact: { type: 'boolean', example: false },
+  ...Object.fromEntries(['email', 'sms', 'call'].map(channel => [channel, { type: 'string', enum: ['unknown', 'granted', 'denied'], example: 'unknown' }])),
+} };
 const normalizedCustomer: SchemaObject = { type: 'object', required: ['external_id', 'revision', 'observed_at', 'first_name', 'last_name'], properties: {
   external_id: { type: 'string', maxLength: 200, example: 'scraped-customer-123' }, revision: { type: 'string', maxLength: 100, example: 'source-version-1' }, observed_at: { type: 'string', format: 'date-time', example: '2026-10-09T09:00:00Z' },
-  first_name: { type: 'string', example: 'Test' }, last_name: { type: 'string', example: 'Customer' }, email: { ...email, nullable: true }, phone: { type: 'string', nullable: true, example: '0400000000' },
+  first_name: { type: 'string', example: 'Test' }, last_name: { type: 'string', example: 'Customer' }, email: { ...email, nullable: true }, phone: { type: 'string', nullable: true, example: '0400000000' }, privacy,
 } };
 const resultProperties: Record<string, SchemaObject> = { outcome: { type: 'string', enum: ['succeeded', 'rejected', 'not_applied', 'unknown'] }, customer: normalizedCustomer, code: { type: 'string', maxLength: 100 }, message: { type: 'string', maxLength: 1000 } };
 const bodies: Record<string, SchemaObject> = {
+  customerEdit: { type: 'object', required: ['siteId'], description: 'Queue contact changes. Confirmed data changes only after source acceptance. Provide one or more contact fields.', properties: { siteId: site, expectedRevision: { type: 'string', maxLength: 100, description: 'Copy customer.source_revision when opening an edit form; stale editors return 409.' }, firstName: { type: 'string', maxLength: 100 }, lastName: { type: 'string', maxLength: 100 }, email: { ...email, nullable: true }, phone: { type: 'string', nullable: true, maxLength: 40 } } },
+  customerPrivacy: { type: 'object', required: ['siteId', 'privacy'], description: 'Queue source-owned privacy changes; pending consent does not authorize sending.', properties: { siteId: site, privacy, expectedRevision: { type: 'string', maxLength: 100, description: 'Copy the confirmed source_revision before editing consent.' } } },
+  customerAssignment: { type: 'object', required: ['siteId', 'assignedTo'], properties: { siteId: site, assignedTo: identifier } },
+  taskEdit: { type: 'object', required: ['siteId', 'version'], properties: { siteId: site, version, title: { type: 'string', minLength: 2, maxLength: 180 }, details: { type: 'string', nullable: true, maxLength: 5000 }, dueAt: { type: 'string', format: 'date-time' }, priority: { type: 'string', enum: ['low', 'normal', 'high'] }, kind: { type: 'string', enum: ['follow_up', 'call'] }, assignedTo: identifier } },
+  taskCancel: { type: 'object', required: ['siteId', 'version', 'reason'], properties: { siteId: site, version, reason: { type: 'string', minLength: 3, maxLength: 1000 } } },
+  messageDraft: { type: 'object', required: ['siteId', 'subject', 'body'], properties: { siteId: site, channel: { type: 'string', enum: ['email'] }, subject: { type: 'string', minLength: 1, maxLength: 200 }, body: { type: 'string', minLength: 1, maxLength: 20000 } } },
+  messageEdit: { type: 'object', required: ['siteId', 'version'], properties: { siteId: site, version, subject: { type: 'string', maxLength: 200 }, body: { type: 'string', maxLength: 20000 }, cancel: { type: 'boolean' } } },
+  messageSend: { type: 'object', required: ['siteId', 'version'], description: 'Explicit send. Requires confirmed consent and Idempotency-Key. SMTP acceptance is not confirmed delivery.', properties: { siteId: site, version } },
+  messageDelivery: { type: 'object', required: ['siteId', 'status', 'providerId', 'evidence'], description: 'ADMIN records independently verified delivery/bounce evidence.', properties: { siteId: site, status: { type: 'string', enum: ['delivered', 'bounced'] }, providerId: { type: 'string' }, evidence: { type: 'string', minLength: 5, maxLength: 2000 } } },
+  messageRecover: { type: 'object', required: ['siteId', 'note'], properties: { siteId: site, note: { type: 'string', minLength: 5, maxLength: 2000 } } },
+  messageResolve: { type: 'object', required: ['siteId', 'status', 'evidence'], description: 'ADMIN reconciles an uncertain send after checking the provider. Never resends.', properties: { siteId: site, status: { type: 'string', enum: ['accepted', 'rejected'] }, providerId: { type: 'string' }, evidence: { type: 'string', minLength: 5, maxLength: 2000 } } },
   customerNote: { type: 'object', required: ['siteId', 'text'], properties: { siteId: site, text: { type: 'string', minLength: 1, maxLength: 5000, example: 'Customer prefers a callback tomorrow morning.' } } },
   customerCall: { type: 'object', required: ['siteId', 'summary', 'direction', 'outcome'], properties: {
     siteId: site, summary: { type: 'string', minLength: 1, maxLength: 5000, example: 'Discussed options; promised a callback.' },

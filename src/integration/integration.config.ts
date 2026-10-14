@@ -17,8 +17,8 @@ export class IntegrationConfig implements OnModuleInit {
     this.workerEnabled = mode !== 'disabled' && process.env.INTEGRATION_WORKER_ENABLED !== 'false';
   }
   info() {
-    return { mode: this.mode, simulated: this.mode === 'simulated', writesEnabled: this.writesEnabled,
+    return { mode: this.mode, simulated: this.mode === 'simulated', writesEnabled: this.writesEnabled, workerEnabled: this.workerEnabled,
       transport: this.mode === 'scraping' ? 'external_scraping_runner' : this.mode,
-      supportedCommands: ['customer.create'], provisionalContract: true };
+      supportedCommands: ['customer.create', 'customer.update', 'customer.privacy_update'], provisionalContract: true };
   }
 }

@@ -39,7 +39,8 @@ export class StaffController {
     await this.access.requireAdmin(request, organisationId);
     const page = pagination(offset, limit);
     const result = pageResult(await this.mongo.memberships.find({ organisation_id: organisationId }).sort({ created_at: 1, id: 1 }).skip(page.offset).limit(page.limit + 1).toArray(), page);
-    return { memberships: result.rows.map(publicRecord), pagination: result.pagination };
+    const profiles = await this.mongo.users.find({ _id: { $in: result.rows.map(row => row.user_id) } }, { projection: { email: 1, full_name: 1 } }).toArray();
+    return { memberships: result.rows.map(row => { const profile = profiles.find(item => item._id === row.user_id); return { ...publicRecord(row), user: { fullName: profile?.full_name ?? null, email: profile?.email ?? null } }; }), pagination: result.pagination };
   }
 
   @Patch('admin/memberships/:id')

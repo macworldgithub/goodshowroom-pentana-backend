@@ -9,8 +9,9 @@ import { publicRecord, type Task } from '../database/models.js';
 import { IntegrationService } from '../integration/integration.service.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { dayWindow } from './day-window.js';
+import { UNKNOWN_PRIVACY } from './privacy.js';
 
-type QueueRow = Task & { bucket: 'overdue' | 'today'; customer: { id: string; first_name: string; last_name: string }[] };
+type QueueRow = Task & { bucket: 'overdue' | 'today'; customer: { id: string; first_name: string; last_name: string; privacy?: import('../database/models.js').CustomerPrivacy }[] };
 type Totals = { all: number; overdue: number; today: number; scheduledCalls: number };
 @Controller('my-day')
 @ApiTags('My Day')
@@ -48,7 +49,7 @@ export class MyDayController {
           completed_at: null, cancelled_at: null, due_at: { $lt: day.endsAt }, ...(view === 'own' ? { assigned_to: request.user!.id } : {}) } },
         { $lookup: { from: 'customers', let: { customerId: '$customer_id' }, pipeline: [
           { $match: { ...this.integration.projectionFilter(), organisation_id: site.organisation_id, site_id: targetSite, $expr: { $eq: ['$id', '$$customerId'] } } },
-          { $project: { _id: 0, id: 1, first_name: 1, last_name: 1 } },
+          { $project: { _id: 0, id: 1, first_name: 1, last_name: 1, privacy: 1 } },
         ], as: 'customer' } },
         { $match: { 'customer.0': { $exists: true } } },
         { $addFields: { kind: { $ifNull: ['$kind', 'follow_up'] }, bucket: { $cond: [{ $lt: ['$due_at', day.startsAt] }, 'overdue', 'today'] } } },
@@ -61,7 +62,10 @@ export class MyDayController {
       ], { session }).toArray();
       const data = result[0];
       const paged = pageResult(data?.items ?? [], page);
-      return { day, view, bucket, canViewTeam, items: paged.rows.map(row => ({ ...publicRecord(row), customer: row.customer[0] })),
+      return { day, view, bucket, canViewTeam, items: paged.rows.map(row => {
+        const privacy = row.customer[0].privacy ?? UNKNOWN_PRIVACY;
+        return { ...publicRecord(row), version: row.version ?? 0, customer: row.customer[0], contactRestrictions: { doNotContact: privacy.do_not_contact, callConsent: privacy.call, emailConsent: privacy.email } };
+      }),
         totals: data?.totals[0] ?? { all: 0, overdue: 0, today: 0, scheduledCalls: 0 }, pagination: paged.pagination,
         includedSources: ['follow_up_tasks', 'scheduled_call_tasks'], integration: this.integration.config.info() };
     });
