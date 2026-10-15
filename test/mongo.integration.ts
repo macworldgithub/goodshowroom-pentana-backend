@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
 import { IntegrationService } from '../src/integration/integration.service.js';
 import { ReservationsService } from '../src/crm/reservations.service.js';
+import { dayWindow } from '../src/crm/day-window.js';
 import { AccessService } from '../src/auth/access.service.js';
 import { MongoService } from '../src/database/mongo.service.js';
 import { SupabaseAuthGuard } from '../src/auth/supabase-auth.guard.js';
@@ -616,6 +617,220 @@ describe('CRM access and transactions against MongoDB', () => {
     await api().patch(`admin/memberships/${member!.id}`, { organisationId, brandIds: member!.brand_ids ?? null }).expect(200);
     await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: originalSite!.brand_ids ?? [] }).expect(200);
   });
+
+  it('verifies the complete Sales workflow through delivery readiness with role, privacy and cancellation gates', async () => {
+    const originalSite = await mongo.sites.findOne({ id: siteId });
+    const sales = await mongo.memberships.findOne({ user_id: identities.sales.id, role: 'SALES' }); const service = await mongo.memberships.findOne({ user_id: identities.service.id, role: 'SERVICE' });
+    const brand = await api().post('admin/brands', { organisationId, name: 'Delivery Workflow Brand' }).expect(201); const brandId = brand.body.brand.id;
+    await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: [...(originalSite!.brand_ids ?? []), brandId] }).expect(200);
+    for (const member of [sales!, service!]) await api().patch(`admin/memberships/${member.id}`, { organisationId, brandIds: [brandId] }).expect(200);
+    const stockBody = { siteId, brandId, stockNumber: 'DELIVERY-WORKFLOW', make: 'Kia', model: 'Sportage', year: 2026, odometerKm: 0, bodyType: 'SUV', fuelType: 'Petrol', transmission: 'Automatic', priceCents: 3499000 };
+    const stock = await api().post('sales/stock', stockBody).set('Idempotency-Key', randomUUID()).expect(201); const stockId = stock.body.vehicle.id;
+    const customer = await createCustomer('sales', { siteId, firstName: 'Full Sales', lastName: 'Workflow', phone: '0400000022' });
+    const followUpAt = new Date(Date.now() - 60000).toISOString();
+    const createdLead = await api('sales').post('sales/leads', { siteId, customerId: customer.body.customer!.id, title: 'Full delivery workflow', source: 'Website', followUpAt }).set('Idempotency-Key', randomUUID()).expect(201);
+    const leadId = createdLead.body.lead.id;
+    const day = await api('sales').get(`my-day?siteId=${siteId}`).expect(200); expect(day.body.items.some((row: { id: string }) => row.id === createdLead.body.lead.follow_up_task_id)).toBe(true);
+    await api('sales').patch(`sales/pipeline/${leadId}/stage`, { siteId, version: 0, stage: 'qualified', reason: 'Vehicle requirements confirmed' }).expect(200);
+    await api('sales').patch(`sales/leads/${leadId}/stock`, { siteId, version: 1, stockId, action: 'add', note: 'Chosen vehicle fits needs' }).expect(200);
+    const appraisalBody = { siteId, make: 'Toyota', model: 'Corolla', year: 2020, odometerKm: 85000, conditionNotes: 'Inspected for full workflow test' };
+    const appraisal = await api('sales').post(`sales/leads/${leadId}/appraisals`, appraisalBody).set('Idempotency-Key', randomUUID()).expect(201);
+    await api('sales').patch(`sales/leads/${leadId}/appraisals/${appraisal.body.appraisal.id}`, { ...appraisalBody, version: 0, status: 'valued', valuationCents: 500000, valuationNotes: 'Internal test assessment' }).expect(200);
+    const proposal = await api('sales').post(`sales/leads/${leadId}/deals`, { siteId, stockId, appraisalId: appraisal.body.appraisal.id, salePriceCents: 3499000, notes: 'Full workflow proposal' }).set('Idempotency-Key', randomUUID()).expect(201);
+    const dealId = proposal.body.deal.id; const dealPath = `sales/leads/${leadId}/deals/${dealId}`;
+    await api('sales').patch(`${dealPath}/status`, { siteId, version: 0, action: 'submit', note: 'Ready for review' }).expect(200);
+    await api().patch(`${dealPath}/status`, { siteId, version: 1, action: 'approve', note: 'Approved test pricing' }).expect(200);
+    const date = new Date(Date.now() + 3600000).toISOString(); const body = { siteId, leadId, dealId, scheduledAt: date, notes: 'Local delivery preparation test' }; const key = randomUUID();
+    const created = await api('sales').post('sales/deliveries', body).set('Idempotency-Key', key).expect(201); const id = created.body.delivery.id;
+    expect(created.body.delivery.readiness.ready).toBe(false); expect(created.body.delivery.readiness.totalItems).toBe(5);
+    expect((await api('sales').post('sales/deliveries', body).set('Idempotency-Key', key).expect(201)).body.delivery.id).toBe(id);
+    await api('sales').post('sales/deliveries', { ...body, notes: 'Changed key payload' }).set('Idempotency-Key', key).expect(409);
+    await api('service').post('sales/deliveries', body).set('Idempotency-Key', randomUUID()).expect(403);
+    await api('sales').get(`sales/deliveries/${id}?siteId=${randomUUID()}`).expect(403);
+    const hold = await api('sales').post(`${dealPath}/reservations`, { siteId, dealVersion: 2, expiresAt: new Date(Date.now() + 86400000).toISOString(), note: 'Hold covers delivery time' }).set('Idempotency-Key', randomUUID()).expect(201);
+    let v = 0;
+    const check = (identity: string, item: string, complete: boolean, note: string, current = v) => api(identity).patch(`sales/deliveries/${id}/checklist`, { siteId, version: current, item, complete, note });
+    await check('sales', 'payment_verified', true, 'Must not bypass Admin verification').expect(403);
+    await check('service', 'documents', true, 'Preparation staff cannot verify documents').expect(403);
+    await check('sales', 'vehicle_preparation', true, 'Requires preparation permission').expect(403);
+    await check('sales', 'documents', true, 'Documents reviewed').expect(200); v++;
+    await check('sales', 'customer_confirmation', true, 'Customer appointment confirmed').expect(200); v++;
+    await check('sales', 'handover_pack', true, 'Pack prepared').expect(200); v++;
+    await check('service', 'vehicle_preparation', true, 'Vehicle preparation confirmed').expect(200); v++;
+    const payment = await check('admin', 'payment_verified', true, 'SIMULATED-RECEIPT-PRIVATE-REFERENCE').expect(200); v++;
+    expect(payment.body.delivery.readiness.ready).toBe(true);
+    const salesView = await api('sales').get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200);
+    const serviceView = await api('service').get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200);
+    for (const response of [salesView, serviceView]) { expect(response.body.delivery.checklist.payment_verified.note).toBeNull(); expect(response.body.delivery).not.toHaveProperty('total_cents'); }
+    expect((await api().get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200)).body.delivery.checklist.payment_verified.note).toBe('SIMULATED-RECEIPT-PRIVATE-REFERENCE');
+    await check('sales', 'documents', false, 'Stale form should not change readiness', 0).expect(409);
+    const concurrent = await Promise.all([check('sales', 'documents', false, 'Documents need rechecking'), check('service', 'vehicle_preparation', false, 'Preparation needs rechecking')]);
+    expect(concurrent.map(row => row.status).sort()).toEqual([200, 409]); v++;
+    const changed = await api().get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200); expect(changed.body.delivery.readiness.ready).toBe(false);
+    const pendingItem = Object.entries(changed.body.delivery.checklist).find(([, value]) => !(value as { complete: boolean }).complete)![0];
+    await check('admin', pendingItem, true, 'Recheck completed', v).expect(200); v++;
+    await api('sales').patch(`${dealPath}/reservations/${hold.body.reservation.id}/release`, { siteId, version: 0, note: 'Readiness must reflect released hold' }).expect(200);
+    expect((await api('sales').get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200)).body.delivery.readiness.ready).toBe(false);
+    await api('sales').post(`${dealPath}/reservations`, { siteId, dealVersion: 2, expiresAt: new Date(Date.now() + 1800000).toISOString(), note: 'Too short for delivery' }).set('Idempotency-Key', randomUUID()).expect(201);
+    expect((await api('sales').get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200)).body.delivery.readiness.blockers).toContain('Reservation must cover the planned delivery time');
+    const history = await api('sales').get(`sales/pipeline/${leadId}/history?siteId=${siteId}&limit=100`).expect(200);
+    expect(JSON.stringify(history.body)).not.toContain('SIMULATED-RECEIPT-PRIVATE-REFERENCE');
+    expect(history.body.history.some((row: { type: string; deliveryId: string }) => row.type === 'sales.delivery_checked' && row.deliveryId === id)).toBe(true);
+    const lead = await api().get(`sales/leads/${leadId}?siteId=${siteId}`).expect(200);
+    await api().patch(`sales/leads/${leadId}`, { siteId, version: lead.body.lead.version, assignedTo: identities.admin.id }).expect(200);
+    await api('sales').get(`sales/deliveries/${id}?siteId=${siteId}`).expect(404);
+    expect((await api('sales').get(`sales/deliveries?siteId=${siteId}&dealId=${dealId}`).expect(200)).body.deliveries).toEqual([]);
+    await api('service').get(`sales/deliveries/${id}?siteId=${siteId}`).expect(200);
+    await api().patch(`${dealPath}/status`, { siteId, version: 1, action: 'cancel', note: 'Stale cancellation should roll back plans and hold' }).expect(409);
+    expect((await mongo.deliveries.findOne({ id }))!.status).toBe('planned');
+    await api().patch(`${dealPath}/status`, { siteId, version: 2, action: 'cancel', note: 'Cancel full workflow test proposal' }).expect(200);
+    expect((await mongo.deliveries.findOne({ id }))!.status).toBe('cancelled'); expect(await mongo.reservations.countDocuments({ deal_id: dealId, status: 'active' })).toBe(0);
+    await check('admin', 'documents', true, 'Cannot modify cancelled plan', v + 1).expect(409);
+    expect((await api().get(`sales/deliveries?siteId=${siteId}&status=cancelled&limit=1`).expect(200)).body.deliveries).toHaveLength(1);
+    for (const member of [sales!, service!]) await api().patch(`admin/memberships/${member.id}`, { organisationId, brandIds: member.brand_ids ?? null }).expect(200);
+    await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: originalSite!.brand_ids ?? [] }).expect(200);
+  });
+
+  it('books and manages Service appointments with brand, ownership, retry and version protection', async () => {
+    const originalSite = await mongo.sites.findOne({ id: siteId });
+    const service = await mongo.memberships.findOne({ user_id: identities.service.id, role: 'SERVICE' });
+    const brand = await api().post('admin/brands', { organisationId, name: 'Appointment Workflow Brand' }).expect(201);
+    const brandId = brand.body.brand.id;
+    await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: [...(originalSite!.brand_ids ?? []), brandId] }).expect(200);
+    await api().patch(`admin/memberships/${service!.id}`, { organisationId, brandIds: [brandId] }).expect(200);
+    try {
+      const customer = await createCustomer('service', { siteId, firstName: 'Service', lastName: 'Booking', phone: '0400000033' });
+      const workshop = await api().post('service/resources', { siteId, name: 'Appointment Test Bay', days: [0,1,2,3,4,5,6], openMinute: 0, closeMinute: 1440 }).set('Idempotency-Key', randomUUID()).expect(201);
+      const base = Math.ceil(Date.now() / 900000) * 900000;
+      const body = { siteId, customerId: customer.body.customer.id, brandId, title: 'Scheduled maintenance', vehicle: 'Kia Sportage TEST-123',
+        resourceId: workshop.body.resource.id, startsAt: new Date(base + 86400000).toISOString(), endsAt: new Date(base + 90000000).toISOString(), notes: 'Local test booking' };
+      await api('sales').post('service/appointments', body).set('Idempotency-Key', randomUUID()).expect(403);
+      await api('service').post('service/appointments', { ...body, startsAt: '2020-01-01T10:00:00Z', endsAt: '2020-01-01T11:00:00Z' }).set('Idempotency-Key', randomUUID()).expect(400);
+      await api('service').post('service/appointments', { ...body, endsAt: body.startsAt }).set('Idempotency-Key', randomUUID()).expect(400);
+      const key = randomUUID();
+      const created = await api('service').post('service/appointments', body).set('Idempotency-Key', key).expect(201);
+      const id = created.body.appointment.id; const path = `service/appointments/${id}`;
+      expect(created.body.appointment).not.toHaveProperty('create_key');
+      expect((await api('service').post('service/appointments', body).set('Idempotency-Key', key).expect(201)).body.appointment.id).toBe(id);
+      await api('service').post('service/appointments', { ...body, title: 'Different job' }).set('Idempotency-Key', key).expect(409);
+      await api('service').post('service/appointments', { ...body, assignedTo: identities.sales.id }).set('Idempotency-Key', randomUUID()).expect(403);
+      await api('service').patch(path, { siteId, version: 0, status: 'confirmed' }).expect(200);
+      await api('service').patch(path, { siteId, version: 0, notes: 'Stale edit' }).expect(409);
+      await api('service').patch(path, { siteId, version: 1, status: 'attended', outcomeNote: 'Not yet due' }).expect(400);
+      const moved = await api('service').patch(path, { siteId, version: 1, startsAt: new Date(base + 172800000).toISOString(), endsAt: new Date(base + 176400000).toISOString() }).expect(200);
+      expect(moved.body.appointment.status).toBe('booked');
+      await api('service').patch(path, { siteId, version: 2, status: 'cancelled' }).expect(400);
+      const writes = await Promise.all([
+        api('service').patch(path, { siteId, version: 2, notes: 'First concurrent edit' }),
+        api('service').patch(path, { siteId, version: 2, notes: 'Second concurrent edit' }),
+      ]);
+      expect(writes.map(r => r.status).sort()).toEqual([200, 409]);
+      const list = await api('service').get(`service/appointments?siteId=${siteId}&customerId=${body.customerId}&limit=1`).expect(200);
+      expect(list.body.appointments[0].id).toBe(id);
+      const history = await api('service').get(`customers/${body.customerId}/activity?siteId=${siteId}&limit=100`).expect(200);
+      expect(history.body.activities.some((event: { appointmentId: string }) => event.appointmentId === id)).toBe(true);
+      await api('service').get(`service/appointments?siteId=${siteId}&status=invalid`).expect(400);
+      const otherBrand = await api().post('admin/brands', { organisationId, name: 'Other appointment brand' }).expect(201);
+      await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: [...(originalSite!.brand_ids ?? []), brandId, otherBrand.body.brand.id] }).expect(200);
+      await api().patch(`admin/memberships/${service!.id}`, { organisationId, brandIds: [otherBrand.body.brand.id] }).expect(200);
+      await api('service').get(`${path}?siteId=${siteId}`).expect(404);
+      const restrictedHistory = await api('service').get(`customers/${body.customerId}/activity?siteId=${siteId}&limit=100`).expect(200);
+      expect(restrictedHistory.body.activities.some((event: { appointmentId: string }) => event.appointmentId === id)).toBe(false);
+      expect((await api('service').get(`service/appointments?siteId=${siteId}`).expect(200)).body.appointments).toEqual([]);
+      await api().patch(`admin/memberships/${service!.id}`, { organisationId, brandIds: [brandId] }).expect(200);
+      await api().patch(path, { siteId, version: 3, assignedTo: identities.admin.id }).expect(200);
+      await api('service').get(`${path}?siteId=${siteId}`).expect(404);
+      await api().patch(path, { siteId, version: 4, status: 'cancelled', outcomeNote: 'Customer requested cancellation' }).expect(200);
+      await api().patch(path, { siteId, version: 5, notes: 'Cannot edit closed booking' }).expect(409);
+      expect(await mongo.auditEvents.countDocuments({ entity_id: id, action: 'service.appointment_rescheduled' })).toBe(1);
+    } finally {
+      await api().patch(`admin/memberships/${service!.id}`, { organisationId, brandIds: service!.brand_ids ?? null }).expect(200);
+      await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: originalSite!.brand_ids ?? [] }).expect(200);
+    }
+  });
+
+
+  it('serializes workshop capacity, releases cancelled slots, and scopes diary/My Day independently', async () => {
+    const original = await mongo.sites.findOne({ id: siteId });
+    const member = await mongo.memberships.findOne({ user_id: identities.service.id, role: 'SERVICE' });
+    const brand = await api().post('admin/brands', { organisationId, name: 'Diary Workflow Brand' }).expect(201);
+    const brandId = brand.body.brand.id;
+    await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: [...(original!.brand_ids ?? []), brandId] }).expect(200);
+    await api().patch(`admin/memberships/${member!.id}`, { organisationId, brandIds: [brandId] }).expect(200);
+    try {
+      const resourceBody = { siteId, name: 'Concurrent Diary Bay', days: [0,1,2,3,4,5,6], openMinute: 0, closeMinute: 1440 };
+      const key = randomUUID();
+      await api('service').post('service/resources', resourceBody).set('Idempotency-Key', key).expect(403);
+      const resource = await api().post('service/resources', resourceBody).set('Idempotency-Key', key).expect(201);
+      const resourceId = resource.body.resource.id;
+      expect((await api().post('service/resources', resourceBody).set('Idempotency-Key', key).expect(201)).body.resource.id).toBe(resourceId);
+      const customer = await createCustomer('service', { siteId, firstName: 'Diary', lastName: 'Capacity', phone: '0400000044' });
+      const day = dayWindow(original!.timezone, undefined, new Date(Date.now() + 86400000));
+      const start = Date.parse(day.startsAt) + 8 * 3600000;
+      const body = { siteId, brandId, resourceId, customerId: customer.body.customer.id, title: 'Capacity verification',
+        vehicle: 'TEST Kia', startsAt: new Date(start).toISOString(), endsAt: new Date(start + 3600000).toISOString() };
+      const attempts = await Promise.all([
+        api('service').post('service/appointments', body).set('Idempotency-Key', randomUUID()),
+        api().post('service/appointments', body).set('Idempotency-Key', randomUUID()),
+      ]);
+      expect(attempts.map(r => r.status).sort()).toEqual([201,409]);
+      const winner = attempts.find(r => r.status === 201)!; const id = winner.body.appointment.id;
+      const winnerRole = attempts[0].status === 201 ? 'service' : 'admin';
+      await api().patch(`service/resources/${resourceId}`, { siteId, version: 0, active: false }).expect(409);
+      await api().patch(`service/resources/${resourceId}`, { siteId, version: 0, days: [0,1,2,3,4,5,6], openMinute: 600, closeMinute: 660 }).expect(409);
+      await api('service').get(`service/diary?siteId=${siteId}&view=team&date=${day.date}`).expect(403);
+      await api('sales').get(`service/availability?siteId=${siteId}&resourceId=${resourceId}&date=${day.date}`).expect(403);
+      const availability = await api('service').get(`service/availability?siteId=${siteId}&resourceId=${resourceId}&date=${day.date}&limit=100`).expect(200);
+      expect(availability.body).not.toHaveProperty('appointments');
+      expect(JSON.stringify(availability.body)).not.toContain(customer.body.customer.id);
+      expect(availability.body.slots.some((slot: { startsAt: string }) => slot.startsAt === body.startsAt)).toBe(false);
+      const diary = await api().get(`service/diary?siteId=${siteId}&view=team&date=${day.date}&limit=1`).expect(200);
+      expect(diary.body.day.date).toBe(day.date); expect(diary.body.appointments.some((a: { id: string }) => a.id === id)).toBe(true);
+      const own = await api('service').get(`service/my-day?siteId=${siteId}&date=${day.date}`).expect(200);
+      expect(own.body.appointments.some((a: { id: string }) => a.id === id)).toBe(winnerRole === 'service');
+      await api('service').get(`service/my-day?siteId=${siteId}&view=team`).expect(403);
+      const team = await api().get(`service/my-day?siteId=${siteId}&view=team&date=${day.date}&bucket=today`).expect(200);
+      expect(team.body.appointments.some((a: { id: string }) => a.id === id)).toBe(true);
+      await api().get(`service/diary?siteId=${siteId}&date=2026-02-30`).expect(400);
+      await api().get(`service/availability?siteId=${siteId}&resourceId=${resourceId}&durationMinutes=16`).expect(400);
+      const adjacent = await api('service').post('service/appointments', { ...body, startsAt: body.endsAt, endsAt: new Date(start + 7200000).toISOString() }).set('Idempotency-Key', randomUUID()).expect(201);
+      await api().patch(`service/appointments/${adjacent.body.appointment.id}`, { siteId, version: 0, startsAt: body.startsAt, endsAt: body.endsAt }).expect(409);
+      await api().patch(`service/appointments/${id}`, { siteId, version: 0, status: 'cancelled', outcomeNote: 'Release test slot' }).expect(200);
+      const freed = await api('service').get(`service/availability?siteId=${siteId}&resourceId=${resourceId}&date=${day.date}&limit=100`).expect(200);
+      expect(freed.body.slots.some((slot: { startsAt: string }) => slot.startsAt === body.startsAt)).toBe(true);
+      const closedQueue = await api().get(`service/my-day?siteId=${siteId}&view=team&date=${day.date}`).expect(200);
+      expect(closedQueue.body.appointments.some((a: { id: string }) => a.id === id)).toBe(false);
+      await api().patch(`service/appointments/${adjacent.body.appointment.id}`, { siteId, version: 0, status: 'cancelled', outcomeNote: 'Release second test slot' }).expect(200);
+      const hiddenBrand = await api().post('admin/brands', { organisationId, name: 'Other diary brand' }).expect(201);
+      await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: [...(original!.brand_ids ?? []), brandId, hiddenBrand.body.brand.id] }).expect(200);
+      const hidden = await api().post('service/appointments', { ...body, brandId: hiddenBrand.body.brand.id,
+        startsAt: new Date(start + 7200000).toISOString(), endsAt: new Date(start + 10800000).toISOString() }).set('Idempotency-Key', randomUUID()).expect(201);
+      await api('service').post('service/appointments', { ...body, startsAt: new Date(start + 7200000).toISOString(), endsAt: new Date(start + 10800000).toISOString() }).set('Idempotency-Key', randomUUID()).expect(409);
+      await api().patch(`admin/memberships/${member!.id}`, { organisationId, extraPermissions: ['service.view_team'] }).expect(200);
+      await api('service').get(`my-day?siteId=${siteId}&view=team`).expect(403);
+      const serviceTeam = await api('service').get(`service/diary?siteId=${siteId}&view=team&date=${day.date}&limit=100`).expect(200);
+      expect(serviceTeam.body.appointments.some((a: { id: string }) => a.id === hidden.body.appointment.id)).toBe(false);
+      const legacy = await mongo.serviceAppointments.findOne({ id });
+      const legacyId = randomUUID();
+      const { resource_id: _resource, ...legacyRow } = legacy!;
+      await mongo.serviceAppointments.insertOne({ ...legacyRow, _id: legacyId, id: legacyId, create_key: randomUUID(), assigned_to: identities.service.id,
+        status: 'booked', starts_at: new Date(Date.parse(day.startsAt) - 1800000).toISOString(), ends_at: new Date(Date.parse(day.startsAt) + 1800000).toISOString() });
+      const overnightDiary = await api('service').get(`service/diary?siteId=${siteId}&date=${day.date}&view=team`).expect(200);
+      expect(overnightDiary.body.appointments.some((a: { id: string }) => a.id === legacyId)).toBe(true);
+      expect(overnightDiary.body.totals.unallocated).toBe(1);
+      const overdue = await api('service').get(`service/my-day?siteId=${siteId}&date=${day.date}&bucket=overdue&view=team&limit=1`).expect(200);
+      expect(overdue.body.appointments[0].id).toBe(legacyId);
+      await api().patch(`service/appointments/${hidden.body.appointment.id}`, { siteId, version: 0, status: 'cancelled', outcomeNote: 'Clean up hidden-brand test booking' }).expect(200);
+
+      await api().patch(`service/resources/${resourceId}`, { siteId, version: 0, active: false }).expect(200);
+      await api('service').post('service/appointments', body).set('Idempotency-Key', randomUUID()).expect(400);
+      expect((await api('service').get(`service/availability?siteId=${siteId}&resourceId=${resourceId}&date=${day.date}`).expect(200)).body.slots).toEqual([]);
+    } finally {
+      await api().patch(`admin/memberships/${member!.id}`, { organisationId, brandIds: member!.brand_ids ?? null, extraPermissions: member!.extra_permissions }).expect(200);
+      await api().patch(`admin/sites/${siteId}`, { organisationId, brandIds: original!.brand_ids ?? [] }).expect(200);
+    }
+  });
+
 
   it('blocks the same authenticated user immediately after suspension', async () => {
     const membership = await mongo.memberships.findOne({ user_id: identities.sales.id });

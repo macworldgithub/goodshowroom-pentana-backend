@@ -96,8 +96,8 @@ export class SalesPipelineController {
       const grants = await this.access.memberships(request, session);
       const brands = (site.brand_ids ?? []).filter(brand => permissionsFor(grantsForBrand(grants, site, brand)).includes('sales.read'));
       const rows = await this.mongo.auditEvents.find({ organisation_id: site.organisation_id, site_id: siteId, entity_type: 'sales_lead', entity_id: id,
-        $or: [{ action: { $nin: ['sales.stock_matched', 'sales.stock_removed', 'sales.deal_created', 'sales.deal_updated', 'sales.deal_submitted', 'sales.deal_approved', 'sales.deal_rejected', 'sales.deal_cancelled', 'sales.reservation_created', 'sales.reservation_released', 'sales.reservation_expired'] } }, { 'metadata.stock_brand_id': { $in: brands } }],
-        action: { $in: ['sales.lead_created', 'sales.lead_updated', 'sales.stage_changed', 'sales.stock_matched', 'sales.stock_removed', 'sales.appraisal_created', 'sales.appraisal_updated', 'sales.deal_created', 'sales.deal_updated', 'sales.deal_submitted', 'sales.deal_approved', 'sales.deal_rejected', 'sales.deal_cancelled', 'sales.reservation_created', 'sales.reservation_released', 'sales.reservation_expired'] } }, { session }).sort({ 'metadata.version': -1, created_at: -1, id: 1 }).skip(page.offset).limit(page.limit + 1).toArray();
+        $or: [{ action: { $nin: ['sales.stock_matched', 'sales.stock_removed', 'sales.deal_created', 'sales.deal_updated', 'sales.deal_submitted', 'sales.deal_approved', 'sales.deal_rejected', 'sales.deal_cancelled', 'sales.reservation_created', 'sales.reservation_released', 'sales.reservation_expired', 'sales.delivery_planned', 'sales.delivery_rescheduled', 'sales.delivery_reopened', 'sales.delivery_checked', 'sales.delivery_cancelled'] } }, { 'metadata.stock_brand_id': { $in: brands } }],
+        action: { $in: ['sales.lead_created', 'sales.lead_updated', 'sales.stage_changed', 'sales.stock_matched', 'sales.stock_removed', 'sales.appraisal_created', 'sales.appraisal_updated', 'sales.deal_created', 'sales.deal_updated', 'sales.deal_submitted', 'sales.deal_approved', 'sales.deal_rejected', 'sales.deal_cancelled', 'sales.reservation_created', 'sales.reservation_released', 'sales.reservation_expired', 'sales.delivery_planned', 'sales.delivery_rescheduled', 'sales.delivery_reopened', 'sales.delivery_checked', 'sales.delivery_cancelled'] } }, { session }).sort({ 'metadata.version': -1, created_at: -1, id: 1 }).skip(page.offset).limit(page.limit + 1).toArray();
       const result = pageResult(rows, page);
       const profiles = await this.mongo.users.find({ _id: { $in: result.rows.map(row => row.actor_user_id) } }, { session, projection: { full_name: 1 } }).toArray();
       return { lead: this.publicLead(lead), history: result.rows.map(event => ({ id: event.id, type: event.action, occurredAt: event.created_at,
@@ -109,6 +109,8 @@ export class SalesPipelineController {
         appraisalValuationCents: event.metadata.appraisal_valuation_cents ?? null,
         dealId: event.metadata.deal_id ?? null, dealStatus: event.metadata.deal_status ?? null, dealTotalCents: event.metadata.deal_total_cents ?? null,
         reservationId: event.metadata.reservation_id ?? null, reservationStatus: event.metadata.reservation_status ?? null, reservationExpiresAt: event.metadata.reservation_expires_at ?? null,
+        deliveryId: event.metadata.delivery_id ?? null, deliveryStatus: event.metadata.delivery_status ?? null, deliveryScheduledAt: event.metadata.delivery_scheduled_at ?? null,
+        deliveryItem: event.metadata.item ?? null, deliveryItemComplete: event.metadata.complete ?? null,
       })), pagination: result.pagination };
     });
   }

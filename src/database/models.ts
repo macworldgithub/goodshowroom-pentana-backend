@@ -1,6 +1,21 @@
 import type { Role } from '../auth/permissions.js';
 
 export type RecordBase = { _id: string; id: string; created_at: string };
+export type ServiceAppointment = RecordBase & {
+  resource_id?: string;
+  organisation_id: string; site_id: string; brand_id: string; customer_id: string;
+  assigned_to: string; created_by: string; title: string; vehicle: string;
+  starts_at: string; ends_at: string; notes: string; outcome_note: string | null;
+  status: 'booked' | 'confirmed' | 'cancelled' | 'attended' | 'no_show';
+  version: number; updated_at: string; integration_mode?: 'simulated' | 'scraping';
+  create_key: string; create_hash: string;
+};
+export type WorkshopResource = RecordBase & {
+  organisation_id: string; site_id: string; name: string; active: boolean;
+  days: number[]; open_minute: number; close_minute: number;
+  version: number; booking_revision: number; updated_at: string;
+  created_by: string; create_key: string; create_hash: string;
+};
 export type Organisation = RecordBase & { name: string; access_revision: number };
 export type Brand = RecordBase & { organisation_id: string; name: string; updated_at: string };
 export type Site = RecordBase & { organisation_id: string; name: string; timezone: string; brand_ids?: string[]; updated_at?: string };
@@ -91,6 +106,14 @@ export type StockReservation = RecordBase & {
   organisation_id: string; site_id: string; lead_id: string; customer_id: string; deal_id: string; stock_id: string; brand_id: string;
   status: 'active' | 'released' | 'expired'; expires_at: string; ended_at: string | null; reason: string;
   created_by: string; version: number; updated_at: string; integration_mode?: 'simulated' | 'scraping';
+  create_key: string; create_hash: string;
+};
+
+export type DeliveryPlan = RecordBase & {
+  organisation_id: string; site_id: string; lead_id: string; customer_id: string; deal_id: string; deal_version: number;
+  stock_id: string; stock_label: string; brand_id: string; scheduled_at: string; notes: string; status: 'planned' | 'cancelled';
+  checklist: Record<import('../crm/delivery-checklist.js').DeliveryItem, { complete: boolean; note: string | null; updated_by: string | null; updated_at: string | null }>;
+  created_by: string; updated_at: string; version: number; integration_mode?: 'simulated' | 'scraping';
   create_key: string; create_hash: string;
 };
 

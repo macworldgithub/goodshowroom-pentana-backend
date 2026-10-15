@@ -4,7 +4,8 @@ import { ApiJsonBody } from '../api-bodies.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
-import { AccessService } from '../auth/access.service.js';
+import { AccessService, grantsForBrand } from '../auth/access.service.js';
+import { permissionsFor } from '../auth/permissions.js';
 import { uuid } from '../auth/validation.js';
 import { MongoService } from '../database/mongo.service.js';
 import { IntegrationService } from '../integration/integration.service.js';
@@ -89,6 +90,10 @@ export class CustomersController {
       if (!customer) throw new NotFoundException('Customer is unavailable at this site');
       const canReadTasks = await this.access.hasSitePermission(request, targetSite, 'tasks.read', session);
       const viewTeam = canReadTasks && await this.access.hasSitePermission(request, targetSite, 'tasks.view_team', session);
+      const serviceRead = await this.access.hasSitePermission(request, targetSite, 'service.read', session);
+      const serviceTeam = serviceRead && await this.access.hasSitePermission(request, targetSite, 'service.view_team', session);
+      const grants = serviceRead ? await this.access.memberships(request, session) : [];
+      const serviceBrands = (site.brand_ids ?? []).filter(brand => permissionsFor(grantsForBrand(grants, site, brand)).includes('service.read'));
       const customerActions = ['customer.created', 'customer.source_imported', 'customer.source_updated', 'customer.note_added', 'customer.call_logged', 'customer.updated', 'customer.privacy_updated', 'customer.assigned',
         'customer.change_queued', 'customer.change_rejected', 'customer.change_retry_wait', 'customer.change_failed', 'customer.change_needs_review',
         'customer.message_sending', 'customer.message_accepted', 'customer.message_rejected', 'customer.message_needs_review', 'customer.message_delivered', 'customer.message_bounced'];
@@ -97,13 +102,19 @@ export class CustomersController {
         { $match: { organisation_id: site.organisation_id, site_id: targetSite, $or: [
           { entity_type: 'customer', entity_id: id, action: { $in: customerActions } },
           ...(canReadTasks ? [{ entity_type: 'task', action: { $in: taskActions } }] : []),
+          ...(serviceRead ? [{ entity_type: 'service_appointment', 'metadata.customer_id': id }] : []),
         ] } },
         { $lookup: { from: 'tasks', let: { entity: '$entity_id' }, pipeline: [
           { $match: { ...this.integration.projectionFilter(), site_id: targetSite, organisation_id: site.organisation_id, customer_id: id,
             ...(viewTeam ? {} : { assigned_to: request.user!.id }), $expr: { $eq: ['$id', '$$entity'] } } },
           { $project: { _id: 0, id: 1 } },
         ], as: 'linked_task' } },
-        { $match: { $or: [{ entity_type: 'customer' }, ...(canReadTasks ? [{ 'linked_task.0': { $exists: true } }] : [])] } },
+        { $lookup: { from: 'service_appointments', let: { entity: '$entity_id' }, pipeline: [
+          { $match: { ...this.integration.projectionFilter(), organisation_id: site.organisation_id, site_id: targetSite, customer_id: id,
+            brand_id: { $in: serviceBrands }, ...(serviceTeam ? {} : { assigned_to: request.user!.id }), $expr: { $eq: ['$id', '$$entity'] } } },
+          { $project: { _id: 0, id: 1 } },
+        ], as: 'linked_appointment' } },
+        { $match: { $or: [{ entity_type: 'customer' }, ...(canReadTasks ? [{ 'linked_task.0': { $exists: true } }] : []), ...(serviceRead ? [{ 'linked_appointment.0': { $exists: true } }] : [])] } },
         { $lookup: { from: 'customer_journal', let: { journalId: '$metadata.journal_id' }, pipeline: [
           { $match: { ...this.integration.projectionFilter(), organisation_id: site.organisation_id, site_id: targetSite, customer_id: id,
             $expr: { $eq: ['$id', '$$journalId'] } } },
@@ -117,9 +128,10 @@ export class CustomersController {
       const labels: Record<string, string> = { 'customer.created': 'Customer creation confirmed', 'customer.source_imported': 'Customer imported from source', 'customer.source_updated': 'Customer refreshed from source', 'task.created': 'Follow-up created', 'task.completed': 'Follow-up completed', 'customer.note_added': 'Internal note added', 'customer.call_logged': 'Customer call logged',
         'customer.updated': 'Contact changes confirmed', 'customer.privacy_updated': 'Privacy changes confirmed', 'customer.assigned': 'Customer reassigned', 'customer.change_queued': 'Customer change pending', 'customer.change_rejected': 'Customer change rejected', 'customer.change_retry_wait': 'Customer change waiting to retry', 'customer.change_failed': 'Customer change failed', 'customer.change_needs_review': 'Customer change needs review',
         'task.updated': 'Task edited', 'task.rescheduled': 'Task rescheduled', 'task.assigned': 'Task reassigned', 'task.cancelled': 'Task cancelled', 'customer.message_sending': 'Email submission started', 'customer.message_accepted': 'Email accepted by transport', 'customer.message_rejected': 'Email rejected', 'customer.message_needs_review': 'Email outcome needs review', 'customer.message_delivered': 'Email delivery evidence recorded', 'customer.message_bounced': 'Email bounce evidence recorded' };
-      return { customerId: id, activities: result.rows.map(event => ({ id: event.id, type: event.action, summary: labels[event.action], occurredAt: event.activity_at, recordedAt: event.created_at,
+      return { customerId: id, activities: result.rows.map(event => ({ id: event.id, type: event.action, summary: event.entity_type === 'service_appointment' ? event.action.replace('service.appointment_', 'Service appointment ').replaceAll('_', ' ') : labels[event.action], occurredAt: event.activity_at, recordedAt: event.created_at,
         author: { id: event.actor_user_id, fullName: names.find(user => user._id === event.actor_user_id)?.full_name ?? null },
         ...(event.entity_type === 'task' ? { taskId: event.entity_id } : {}),
+        ...(event.entity_type === 'service_appointment' ? { appointmentId: event.entity_id } : {}),
         ...(event.metadata?.command_id ? { commandId: event.metadata.command_id } : {}),
         ...(event.metadata?.message_id ? { messageId: event.metadata.message_id } : {}),
         ...(event.journal[0] ? { journal: { id: event.journal[0].id, kind: event.journal[0].kind, text: event.journal[0].text,

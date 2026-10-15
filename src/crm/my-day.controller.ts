@@ -23,7 +23,7 @@ export class MyDayController {
     @Inject(IntegrationService) private readonly integration: IntegrationService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Personal/team daily work queue', description: 'Open tasks and scheduled call tasks through the selected site-local day. Overdue means due before this day begins; today includes the full selected day. Counts cover the full authorized queue, not just the page. Existing tasks default to follow_up. No appointment, delivery, or collection modules exist yet.' })
+  @ApiOperation({ summary: 'Personal/team task queue', description: 'Open tasks and calls through the selected site-local day. Counts cover the full authorized task queue. Service appointment work is separately paginated at GET /service/my-day with independent Service own/team and brand permissions; the frontend displays both queues.' })
   @ApiQuery({ name: 'siteId', required: true, type: String, format: 'uuid' })
   @ApiQuery({ name: 'date', required: false, type: String, example: '2026-10-12', description: 'YYYY-MM-DD; defaults to today in the site timezone.' })
   @ApiQuery({ name: 'view', required: false, enum: ['own', 'team'], description: 'Default own, including ADMIN. team requires tasks.view_team.' })

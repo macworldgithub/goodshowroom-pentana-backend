@@ -41,7 +41,7 @@ export class SitesController {
     uuid(id, 'siteId'); const page = pagination(offset, limit);
     return this.mongo.transaction(async session => {
       const site = await this.access.requireSite(request, id, 'customers.read', session);
-      if (!(await this.access.hasSitePermission(request, id, 'customers.assign', session)) && !(await this.access.hasSitePermission(request, id, 'tasks.assign', session)) && !(await this.access.hasSitePermission(request, id, 'sales.assign_leads', session))) throw new ForbiddenException('Assignment permission is required');
+      if (!(await this.access.hasSitePermission(request, id, 'customers.assign', session)) && !(await this.access.hasSitePermission(request, id, 'tasks.assign', session)) && !(await this.access.hasSitePermission(request, id, 'sales.assign_leads', session)) && !(await this.access.hasSitePermission(request, id, 'service.assign_work', session))) throw new ForbiddenException('Assignment permission is required');
       const grouped = await this.mongo.memberships.aggregate<{ userId: string; grants: import('../database/models.js').Membership[] }>([
         { $match: { organisation_id: site.organisation_id, status: 'active', $or: [{ role: 'ADMIN', site_id: null }, { role: { $in: ['SALES', 'SERVICE'] }, site_id: id }] } },
         { $group: { _id: '$user_id', grants: { $push: '$$ROOT' } } }, { $sort: { _id: 1 } }, { $skip: page.offset }, { $limit: page.limit + 1 },

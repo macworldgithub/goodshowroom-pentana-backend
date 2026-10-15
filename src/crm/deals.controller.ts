@@ -15,6 +15,7 @@ import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { dealPricing } from './deal-pricing.js';
 import { pipelineStage } from './sales-pipeline.js';
 import { ReservationsService } from './reservations.service.js';
+import { DeliveriesService } from './deliveries.service.js';
 
 const schema = { type: 'object' as const, properties: {
   siteId: { type: 'string', format: 'uuid' }, stockId: { type: 'string', format: 'uuid' }, appraisalId: { type: 'string', format: 'uuid', nullable: true },
@@ -29,7 +30,8 @@ function version(value: unknown) { if (!Number.isSafeInteger(value) || Number(va
 export class DealsController {
   constructor(@Inject(AccessService) private readonly access: AccessService, @Inject(MongoService) private readonly mongo: MongoService,
     @Inject(AuditService) private readonly audit: AuditService, @Inject(IntegrationService) private readonly integration: IntegrationService,
-    @Inject(ReservationsService) private readonly reservations: ReservationsService) {}
+    @Inject(ReservationsService) private readonly reservations: ReservationsService,
+    @Inject(DeliveriesService) private readonly deliveries: DeliveriesService) {}
   private publicDeal(row: SalesDeal) { const { create_key: _key, create_hash: _hash, reservation_revision: _lock, ...record } = publicRecord(row); return record; }
   private async lead(request: AuthenticatedRequest, leadId: string, siteId: string, write: boolean, session: ClientSession) {
     const site = await this.access.requireSite(request, siteId, write ? 'sales.write' : 'sales.read', session);
@@ -150,6 +152,7 @@ export class DealsController {
       const status = { submit: 'submitted', approve: 'approved', reject: 'rejected', cancel: 'cancelled' }[body.action as string] as SalesDeal['status'];
       const now = new Date().toISOString(); const review = ['approve', 'reject'].includes(body.action as string);
       if (body.action === 'cancel') await this.reservations.releaseDeal(site.organisation_id, existing.id, request.user!.id, session);
+      if (body.action === 'cancel') await this.deliveries.cancelDeal(site.organisation_id, existing.id, request.user!.id, session);
       const row = await this.mongo.salesDeals.findOneAndUpdate({ _id: existing._id, version: currentVersion }, { $set: { status, updated_at: now,
         ...(review ? { reviewed_by: request.user!.id, reviewed_at: now, review_note: note } : {}) }, $inc: { version: 1 } }, { session, returnDocument: 'after' });
       if (!row) throw new ConflictException('Deal changed; refresh before changing status'); await this.record(request, lead, row, `sales.deal_${status}`, note, session); return { deal: this.publicDeal(row) };

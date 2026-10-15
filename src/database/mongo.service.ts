@@ -30,10 +30,13 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get customers() { return this.database.collection<Customer>('customers'); }
   get tasks() { return this.database.collection<Task>('tasks'); }
   get salesLeads() { return this.database.collection<import('./models.js').SalesLead>('sales_leads'); }
+  get serviceAppointments() { return this.database.collection<import('./models.js').ServiceAppointment>('service_appointments'); }
+  get workshopResources() { return this.database.collection<import('./models.js').WorkshopResource>('workshop_resources'); }
   get stockVehicles() { return this.database.collection<import('./models.js').StockVehicle>('stock_vehicles'); }
   get appraisals() { return this.database.collection<import('./models.js').TradeInAppraisal>('trade_in_appraisals'); }
   get salesDeals() { return this.database.collection<import('./models.js').SalesDeal>('sales_deals'); }
   get reservations() { return this.database.collection<import('./models.js').StockReservation>('stock_reservations'); }
+  get deliveries() { return this.database.collection<import('./models.js').DeliveryPlan>('delivery_plans'); }
   get customerJournal() { return this.database.collection<CustomerJournal>('customer_journal'); }
   get customerMessages() { return this.database.collection<CustomerMessage>('customer_messages'); }
   get commands() { return this.database.collection<Command>('integration_commands'); }
@@ -45,6 +48,14 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get systemState() { return this.database.collection<{ _id: string; organisation_id?: string; email?: string; user_id?: string; created_at?: string; revision?: number }>('system_state'); }
 
   private async ensureIndexes() {
+    await this.workshopResources.createIndex({ site_id: 1, name: 1 }, { unique: true });
+    await this.workshopResources.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.serviceAppointments.createIndex({ site_id: 1, resource_id: 1, status: 1, starts_at: 1, ends_at: 1 });
+    await this.serviceAppointments.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.serviceAppointments.createIndex({ site_id: 1, brand_id: 1, assigned_to: 1, starts_at: 1, id: 1 });
+    await this.deliveries.createIndex({ organisation_id: 1, deal_id: 1 }, { unique: true });
+    await this.deliveries.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
+    await this.deliveries.createIndex({ site_id: 1, brand_id: 1, status: 1, scheduled_at: 1, id: 1 });
     await this.reservations.createIndex({ organisation_id: 1, stock_id: 1 }, { unique: true, partialFilterExpression: { status: 'active' } });
     await this.reservations.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
     await this.reservations.createIndex({ status: 1, expires_at: 1 });

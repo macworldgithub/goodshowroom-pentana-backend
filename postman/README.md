@@ -235,3 +235,9 @@ assignment-authorized staff directory and default SALES rejection. These endpoin
 support named assignee selection in the frontend. PRIVATE credentials/runtime IDs
 were preserved; use valid existing accounts rather than assuming sample logins exist.
 The active frontend now exercises Steps 1–3; see ../my-app/FRONTEND-INTEGRATION.md.
+
+Delivery update: 31 folders, 245 requests. Folder 31 verifies simulated approved fixtures and exercises checklist roles/readiness. Run the preceding Sales folders first with valid accounts and matching SERVICE site/brand access. See ../DELIVERY-READINESS.md. Live requests were not rerun.
+
+Service appointments: folder 32 selects a SERVICE-accessible site brand, books a disposable serviceCustomerId, then verifies confirmation, rescheduling, history, stale versions and cancellation. Collection now has 32 folders and 256 requests. See ../SERVICE-APPOINTMENTS.md. Workshop capacity and My Day appointment inputs are next; live requests were not rerun.
+
+Diary/capacity update: 33 folders, 269 requests. Folder 32 now creates a disposable ADMIN workshop bay and supplies resourceId on bookings. Run folder 33 afterward for conflict, daily diary, appointment My Day, deactivation and released-slot checks. Use disposable customers and valid accounts; default SERVICE team-denial assumes no service.view_team grant. See ../SERVICE-DIARY.md. Live requests were not rerun.

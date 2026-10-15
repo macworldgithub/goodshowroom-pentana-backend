@@ -1,5 +1,44 @@
 # Good Showroom — implementation status and remaining backend plan
 
+## 14 October 2026 — Step 5, diary and workshop capacity
+
+The backend and frontend now support site-local daily appointment views, one-booking
+workshop resources with weekly opening hours, available slots, transactional overlap
+protection and Service appointment inputs in My Day. Task and Service queues retain
+independent counts, pagination and team permissions. Existing sidebars are retained.
+Postman folders 32/33 cover the updated resource-required booking flow and capacity.
+See [SERVICE-DIARY.md](SERVICE-DIARY.md).
+
+63 MongoDB integration, 107 unit, 4 endpoint and 10 frontend tests pass, plus builds,
+lint/type checks and Postman syntax/scope checks. Collection: 33 folders/269 requests.
+Browser acceptance remains pending because the browser tool cannot initialize;
+live Postman requests were not rerun. Next: repair orders, then check-in/collection,
+customer updates and recovery queues. Real scraping remains last.
+
+## 14 October 2026 — Step 5, Service appointments
+
+Local customer-linked appointments are connected in backend and frontend with
+site/brand and own/team access, validated advisor assignment, safe retry/version
+checks, confirmation, rescheduling and cancellation/attendance outcomes. Customer
+360 shows authorized appointment history. Postman folder 32 covers this increment.
+See [SERVICE-APPOINTMENTS.md](SERVICE-APPOINTMENTS.md).
+
+62 MongoDB integration, 103 unit, 4 endpoint and 9 frontend tests passed, alongside
+builds/lint/type checks and Postman syntax/scope checks. Browser acceptance remains
+pending due to browser-tool initialization failure; live Postman requests were not
+rerun. Next: workshop diary/capacity and appointment inputs in My Day, then repair
+orders and check-in/collection. Real scraping remains last.
+
+## 14 October 2026 — Step 4 implementation completed
+
+Delivery plans, role-specific checklists, computed readiness and shared progress
+history are connected in backend and frontend. Sidebars remain unchanged. Postman
+now has 31 folders and 245 requests. See [DELIVERY-READINESS.md](DELIVERY-READINESS.md).
+61 MongoDB integration, 4 endpoint, 103 backend unit and 8 frontend tests passed,
+plus builds/lint/type checks and Postman script/scope checks. Signed-in Sales browser
+acceptance remains pending due to browser-tool initialization failure. Live Postman
+requests were not rerun. Next is Step 5 Service; real scraping remains last.
+
 ## 14 October 2026 — Step 4, Reservations
 
 Implemented approved-deal local vehicle holds, future expiry (up to seven days), one-active-hold protection, idempotent creation, versioned release, atomic deal cancellation, periodic/lazy expiry and progress history. Stock filters and safe expiry summaries distinguish reserved from available vehicles. Active holds protect vehicle/appraisal edits. The frontend is connected at Sales desk → Deals → Reservation. Postman folder 30 covers it. See [STOCK-RESERVATIONS.md](STOCK-RESERVATIONS.md).

@@ -15,6 +15,11 @@ import { AppraisalsController } from './appraisals.controller.js';
 import { DealsController } from './deals.controller.js';
 import { ReservationsController } from './reservations.controller.js';
 import { ReservationsService } from './reservations.service.js';
+import { DeliveriesController } from './deliveries.controller.js';
+import { DeliveriesService } from './deliveries.service.js';
+import { ServiceAppointmentsController } from './service-appointments.controller.js';
+import { ServiceDiaryController } from './service-diary.controller.js';
+import { WorkshopService } from './workshop.service.js';
 
-@Module({ imports: [AuthModule, IntegrationModule], controllers: [ReservationsController, DealsController, AppraisalsController, StockController, SalesPipelineController, SalesLeadsController, CustomersController, CustomerJournalController, CustomerChangesController, CustomerMessagesController, TasksController, MyDayController], providers: [CustomerMailTransport, ReservationsService] })
+@Module({ imports: [AuthModule, IntegrationModule], controllers: [ServiceDiaryController, ServiceAppointmentsController, DeliveriesController, ReservationsController, DealsController, AppraisalsController, StockController, SalesPipelineController, SalesLeadsController, CustomersController, CustomerJournalController, CustomerChangesController, CustomerMessagesController, TasksController, MyDayController], providers: [WorkshopService, CustomerMailTransport, ReservationsService, DeliveriesService] })
 export class CrmModule {}
