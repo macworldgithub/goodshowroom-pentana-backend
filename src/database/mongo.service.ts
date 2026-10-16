@@ -31,6 +31,8 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get tasks() { return this.database.collection<Task>('tasks'); }
   get salesLeads() { return this.database.collection<import('./models.js').SalesLead>('sales_leads'); }
   get serviceAppointments() { return this.database.collection<import('./models.js').ServiceAppointment>('service_appointments'); }
+  get repairOrders() { return this.database.collection<import('./models.js').RepairOrder>('repair_orders'); }
+  get repairOrderCommands() { return this.database.collection<import('./models.js').RepairOrderCommand>('repair_order_commands'); }
   get workshopResources() { return this.database.collection<import('./models.js').WorkshopResource>('workshop_resources'); }
   get stockVehicles() { return this.database.collection<import('./models.js').StockVehicle>('stock_vehicles'); }
   get appraisals() { return this.database.collection<import('./models.js').TradeInAppraisal>('trade_in_appraisals'); }
@@ -44,10 +46,26 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get simulatedRecords() { return this.database.collection<SimulatedRecord>('simulated_source_records'); }
   get simulatorBehaviors() { return this.database.collection<SimulatorBehavior>('simulator_behaviors'); }
   get auditEvents() { return this.database.collection<AuditEvent>('audit_events'); }
+  get customerVehicles() { return this.database.collection<import('./models.js').CustomerVehicle>('customer_vehicles'); }
+  get customerRelationships() { return this.database.collection<import('./models.js').CustomerRelationship>('customer_relationships'); }
+  get loanCars() { return this.database.collection<import('./models.js').LoanCar>('loan_cars'); }
+  get handoverItems() { return this.database.collection<import('./models.js').HandoverItem>('handover_items'); }
+  get recoveryResolutions() { return this.database.collection<import('./models.js').RecoveryResolution>('service_recovery_resolutions'); }
+  get activityMirrors() { return this.database.collection<import('./models.js').ActivityMirrorCommand>('activity_mirror_commands'); }
+  get simulatedActivities() { return this.database.collection<import('./models.js').ActivityMirrorCommand & { external_id:string }>('simulated_source_activities'); }
   get users() { return this.database.collection<{ _id: string; email: string | null; full_name?: string; updated_at: string }>('users'); }
   get systemState() { return this.database.collection<{ _id: string; organisation_id?: string; email?: string; user_id?: string; created_at?: string; revision?: number }>('system_state'); }
 
   private async ensureIndexes() {
+    await this.activityMirrors.createIndex({status:1,available_at:1});
+    await this.activityMirrors.createIndex({organisation_id:1,site_id:1,customer_id:1,created_at:-1,id:1});
+    await this.recoveryResolutions.createIndex({ organisation_id: 1, site_id: 1, kind: 1, entity_id: 1, fingerprint: 1 }, { unique: true });
+    await this.repairOrders.createIndex({ site_id: 1, integration_mode: 1, appointment_id: 1 }, { unique: true, partialFilterExpression: { integration_mode: 'simulated' } });
+    await this.repairOrders.createIndex({ site_id: 1, integration_mode: 1, external_id: 1 }, { unique: true });
+    await this.repairOrders.createIndex({ site_id: 1, brand_id: 1, assigned_to: 1, status: 1, promised_at: 1, id: 1 });
+    await this.repairOrderCommands.createIndex({ organisation_id: 1, actor_user_id: 1, idempotency_key: 1 }, { unique: true });
+    await this.repairOrderCommands.createIndex({ mode: 1, appointment_id: 1 }, { unique: true, partialFilterExpression: { status: { $in: ['queued', 'retry_wait'] } } });
+    await this.repairOrderCommands.createIndex({ status: 1, available_at: 1 });
     await this.workshopResources.createIndex({ site_id: 1, name: 1 }, { unique: true });
     await this.workshopResources.createIndex({ organisation_id: 1, created_by: 1, create_key: 1 }, { unique: true });
     await this.serviceAppointments.createIndex({ site_id: 1, resource_id: 1, status: 1, starts_at: 1, ends_at: 1 });
@@ -101,6 +119,11 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
       partialFilterExpression: { integration_external_id: { $type: 'string' } } });
     await this.auditEvents.createIndex({ organisation_id: 1, created_at: -1 });
     await this.auditEvents.createIndex({ organisation_id: 1, site_id: 1, entity_type: 1, entity_id: 1, created_at: -1, id: 1 });
+    await this.customerVehicles.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, updated_at: -1, id: 1 });
+    await this.customerRelationships.createIndex({ organisation_id: 1, site_id: 1, customer_id: 1, related_customer_id: 1 }, { unique: true });
+    await this.loanCars.createIndex({ organisation_id: 1, site_id: 1, status: 1, id: 1 });
+    await this.handoverItems.createIndex({ organisation_id: 1, site_id: 1, status: 1, scheduled_delivery_at: 1, id: 1 });
+    await this.handoverItems.createIndex({ organisation_id: 1, deal_id: 1 }, { unique: true });
   }
 
   async transaction<T>(operation: (session: ClientSession) => Promise<T>): Promise<T> {

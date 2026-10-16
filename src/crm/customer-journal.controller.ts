@@ -12,6 +12,7 @@ import { IntegrationService } from '../integration/integration.service.js';
 import { ApiJsonBody } from '../api-bodies.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { journalInput, type JournalInput } from './journal-validation.js';
+import { ActivityMirrorService } from './activity-mirror.service.js';
 
 export function publicJournal(entry: CustomerJournal, canReadFollowUp = false) {
   const { idempotency_key: _key, request_hash: _hash, follow_up_task_id, ...result } = publicRecord(entry);
@@ -25,7 +26,8 @@ export class CustomerJournalController {
   constructor(@Inject(AccessService) private readonly access: AccessService,
     @Inject(MongoService) private readonly mongo: MongoService,
     @Inject(AuditService) private readonly audit: AuditService,
-    @Inject(IntegrationService) private readonly integration: IntegrationService) {}
+    @Inject(IntegrationService) private readonly integration: IntegrationService,
+    @Inject(ActivityMirrorService) private readonly mirrors: ActivityMirrorService) {}
 
   private async create(request: AuthenticatedRequest, id: string, siteId: string, kind: 'note' | 'call', input: JournalInput, key: unknown) {
     const idempotencyKey = text(key, 'Idempotency-Key', 8, 200);
@@ -65,6 +67,7 @@ export class CustomerJournalController {
         ...(followUp ? { follow_up_task_id: followUp.id } : {}), ...(customer.integration_mode ? { integration_mode: customer.integration_mode } : {}),
         idempotency_key: idempotencyKey, request_hash: hash };
       await this.mongo.customerJournal.insertOne(entry, { session });
+      await this.mirrors.queue(session,entry.id,site.organisation_id,siteId,id,request.user!.id,kind,{text:entry.text,occurred_at:entry.occurred_at,...(kind==='call'?{direction:entry.direction,outcome:entry.outcome}:{})});
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, kind === 'note' ? 'customer.note_added' : 'customer.call_logged', 'customer', id, { journal_id: entryId });
       return { entry: publicJournal(entry, !!followUp), followUp: followUp ? publicRecord(followUp) : null, replayed: false, integration: this.integration.config.info() };
     });

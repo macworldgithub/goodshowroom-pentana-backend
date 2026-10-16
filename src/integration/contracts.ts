@@ -8,6 +8,11 @@ export type SourceVehicle = { external_id: string; site_external_id: string; bra
 export type SourceDeal = { external_id: string; customer_external_id: string; vehicle_external_id: string | null; status: string; source_total: string | null; currency: string | null };
 export type SourceAppointment = { external_id: string; customer_external_id: string; starts_at: string; status: string };
 export type SourceRepairOrder = { external_id: string; customer_external_id: string; vehicle_external_id: string | null; status: string };
+export type SourceFinancialContext = {
+  invoice_external_id: string; issued_at: string | null; total: string | null;
+  outstanding: string | null; currency: string | null;
+}; // Read-only contract: deliberately no financial write command.
+export type SourceActivity = { external_id: string; customer_external_id: string; kind: 'note' | 'call' | 'message_outcome'; occurred_at: string; summary: string };
 export type IntegrationMode = 'disabled' | 'simulated' | 'scraping';
 export type CommandStatus = 'queued' | 'processing' | 'retry_wait' | 'succeeded' | 'rejected' | 'failed' | 'needs_review';
 export type Command = RecordBase & {

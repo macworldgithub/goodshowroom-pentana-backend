@@ -12,3 +12,7 @@ export function requireEmailConsent(customer: Customer) {
   if (customer.privacy?.do_not_contact || customer.privacy?.email !== 'granted') throw new ForbiddenException('Confirmed email consent is required and do-not-contact must be false');
   if (!customer.email) throw new BadRequestException('Customer has no email address');
 }
+export function requireSmsConsent(customer: Customer) {
+  if (customer.privacy?.do_not_contact || customer.privacy?.sms !== 'granted') throw new ForbiddenException('Confirmed SMS consent is required and do-not-contact must be false');
+  if (!customer.phone) throw new BadRequestException('Customer has no phone number');
+}

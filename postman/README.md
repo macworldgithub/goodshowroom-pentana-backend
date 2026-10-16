@@ -241,3 +241,20 @@ Delivery update: 31 folders, 245 requests. Folder 31 verifies simulated approved
 Service appointments: folder 32 selects a SERVICE-accessible site brand, books a disposable serviceCustomerId, then verifies confirmation, rescheduling, history, stale versions and cancellation. Collection now has 32 folders and 256 requests. See ../SERVICE-APPOINTMENTS.md. Workshop capacity and My Day appointment inputs are next; live requests were not rerun.
 
 Diary/capacity update: 33 folders, 269 requests. Folder 32 now creates a disposable ADMIN workshop bay and supplies resourceId on bookings. Run folder 33 afterward for conflict, daily diary, appointment My Day, deactivation and released-slot checks. Use disposable customers and valid accounts; default SERVICE team-denial assumes no service.view_team grant. See ../SERVICE-DIARY.md. Live requests were not rerun.
+
+Repair-order update (16 October 2026): 34 folders, 290 requests. Folder 34 prepares
+a simulated RO from a disposable appointment, checks command replay, permissions,
+read-only financial boundaries, authority notes, supported transitions, Customer
+360 history and My Day. Run folders 32–33 first with the simulator configured.
+RO commands have their own durable queue; the customer-only integration command
+endpoints do not process them. See [REPAIR-ORDERS.md](../REPAIR-ORDERS.md). Script
+syntax and variable-scope checks pass; live Postman requests remain pending.
+
+
+Local scope review: **38 folders / 345 requests**. Optional folders 35-38 cover a
+started simulated workshop day, handover/reporting, customer fixtures, recovery
+resolutions and activity mirrors. Read folder prerequisites; examples require
+current versions/disposable records and are not all a single sequential run.
+No live Postman/provider/Pentana execution is claimed. The temporary MongoDB
+integration suite verifies the lifecycle and permission cases independently.
+See ../LOCAL-SCOPE-REVIEW.md for current scope, configuration and acceptance gaps.

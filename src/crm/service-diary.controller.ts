@@ -122,15 +122,22 @@ export class ServiceDiaryController {
     const canViewTeam = await this.access.hasSitePermission(request, siteId, 'service.view_team');
     if (view === 'team' && !canViewTeam) throw new ForbiddenException('Team diary requires service.view_team');
     if (!['all', 'today', 'overdue'].includes(bucket)) throw new BadRequestException('Invalid appointment bucket');
-    const day = dayWindow(site.timezone, query.date); const page = pagination(query.offset, query.limit);
+    let day = dayWindow(site.timezone, query.date); const page = pagination(query.offset, query.limit);
+    const range=query.range??'day';if(!['day','week'].includes(range)||dailyWork&&range!=='day')throw new BadRequestException('Invalid diary range');
+    if(range==='week'){
+      const date=new Date(day.date+'T00:00:00Z');date.setUTCDate(date.getUTCDate()-(date.getUTCDay()+6)%7);const first=date.toISOString().slice(0,10);date.setUTCDate(date.getUTCDate()+7);
+      const firstDay=dayWindow(site.timezone,first),nextWeek=dayWindow(site.timezone,date.toISOString().slice(0,10));day={...firstDay,endsAt:nextWeek.startsAt};
+    }
+    if(query.advisorId&&query.advisorId!==request.user!.id&&!canViewTeam)throw new ForbiddenException('Team advisor filtering requires Service team access');
+
     const grants = await this.access.memberships(request);
     const brands = (site.brand_ids ?? []).filter(id => permissionsFor(grantsForBrand(grants, site, id)).includes('service.read'));
     const filter = { ...this.integration.projectionFilter(), organisation_id: site.organisation_id, site_id: siteId, brand_id: { $in: brands },
-      ...(view === 'own' ? { assigned_to: request.user!.id } : {}),
+      ...(query.advisorId?{assigned_to:uuid(query.advisorId,'advisorId')}:view === 'own' ? { assigned_to: request.user!.id } : {}),
       ...(dailyWork ? { status: { $in: ['booked', 'confirmed'] }, starts_at: { $lt: day.endsAt } } :
         { starts_at: { $lt: day.endsAt }, ends_at: { $gt: day.startsAt } }),
       ...(query.resourceId ? { resource_id: uuid(query.resourceId, 'resourceId') } : {}) };
-    type Row = ServiceAppointment & { customer: { id: string; first_name: string; last_name: string }[]; resource: { id: string; name: string }[]; bucket: string };
+    type Row = ServiceAppointment & { advisorProfile:{full_name?:string}[]; workflow: {id:string;status:string;stage?:string;check_in?:unknown;collection?:unknown}[]; customer: { id: string; first_name: string; last_name: string }[]; resource: { id: string; name: string }[]; bucket: string };
     const result = await this.mongo.serviceAppointments.aggregate<{ items: Row[]; totals: { all: number; today: number; overdue: number; unallocated: number }[] }>([
       { $match: filter },
       { $lookup: { from: 'customers', let: { customer: '$customer_id' }, pipeline: [
@@ -138,6 +145,8 @@ export class ServiceDiaryController {
         { $project: { _id: 0, id: 1, first_name: 1, last_name: 1 } },
       ], as: 'customer' } },
       { $match: { 'customer.0': { $exists: true } } },
+      { $lookup:{from:'users',localField:'assigned_to',foreignField:'_id',pipeline:[{$project:{_id:0,full_name:1}}],as:'advisorProfile'} },
+      { $lookup:{from:'repair_orders',let:{appointment:'$id'},pipeline:[{$match:{...this.integration.projectionFilter(),organisation_id:site.organisation_id,site_id:siteId,brand_id:{$in:brands},...(view==='own'?{assigned_to:request.user!.id}:{}),$expr:{$eq:['$appointment_id','$$appointment']}}},{$project:{_id:0,id:1,status:1,stage:1,check_in:1,collection:1}}],as:'workflow'} },
       { $lookup: { from: 'workshop_resources', let: { resource: '$resource_id' }, pipeline: [
         { $match: { organisation_id: site.organisation_id, site_id: siteId, $expr: { $eq: ['$id', '$$resource'] } } },
         { $project: { _id: 0, id: 1, name: 1 } },
@@ -148,12 +157,14 @@ export class ServiceDiaryController {
         items: [...(bucket === 'all' ? [] : [{ $match: { bucket } }]), { $sort: { starts_at: 1, id: 1 } }, { $skip: page.offset }, { $limit: page.limit + 1 }] } },
     ]).toArray();
     const data = result[0]; const paged = pageResult(data?.items ?? [], page);
-    return { day, view, bucket, canViewTeam, appointments: paged.rows.map(row => {
+    return { day, range, view, bucket, canViewTeam, appointments: paged.rows.map(row => {
       const { create_key: _key, create_hash: _hash, ...record } = publicRecord(row);
-      return { ...record, customer: row.customer[0], resource: row.resource[0] ?? null };
+      return { ...record, advisorName:row.advisorProfile[0]?.full_name??null, workflowStatus:row.workflow[0]?.collection?'collected':row.workflow[0]?.status==='ready'?'ready':row.workflow[0]?.stage&&row.workflow[0].stage!=='check_in'?'in_progress':row.workflow[0]?.check_in?'arrived':row.status,repairOrderId:row.workflow[0]?.id??null,customer: row.customer[0], resource: row.resource[0] ?? null };
     }), totals: data?.totals[0] ?? { all: 0, today: 0, overdue: 0, unallocated: 0 }, pagination: paged.pagination, includedSources: ['service_appointments'] };
   }
   @Get('diary')
+  @ApiQuery({name:'range',required:false,enum:['day','week']})
+  @ApiQuery({name:'advisorId',required:false})
   @ApiPagination()
   @ApiQuery({ name: 'siteId', required: true })
   @ApiQuery({ name: 'date', required: false })

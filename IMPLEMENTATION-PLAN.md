@@ -1,5 +1,35 @@
 # Good Showroom — implementation status and remaining backend plan
 
+## Current local scope review
+
+The current request supersedes the earlier repair-order-only increment. Service
+check-in/progress/authority/collection, recovery and linked simulated messaging,
+order-to-handover/first-service/final handover, customer context and operational
+reporting are now connected. Activity mirroring uses durable simulated commands;
+accepted customer receipts reconcile hourly. See LOCAL-SCOPE-REVIEW.md and
+SCOPE-PROGRESS.md for the current requirement checklist and verification.
+Postman now contains 38 folders and 345 requests. All live source/provider and
+production acceptance gates remain deferred under the user's local-only instruction.
+
+## Historical increment: 16 October 2026 — Step 5, repair orders
+
+The repair-order increment adds durable simulated source commands, persisted
+appointment/customer/site/brand/advisor links, list/detail/board screens, separate
+authority and status histories, Customer 360 events and My Day exceptions.
+Invoicing/parts/totals remain source-owned. Live writes are blocked; simulation
+does not prove Pentana acceptance. Vehicle descriptions come from appointments;
+customer-vehicle source IDs remain unavailable.
+
+Current scope checklist: [SCOPE-PROGRESS.md](SCOPE-PROGRESS.md).
+API, storage, queue configuration and limitations: [REPAIR-ORDERS.md](REPAIR-ORDERS.md).
+Postman: 34 folders / 290 requests. No live Postman, source writes, messages or
+signed-in browser acceptance were performed in this increment. Next: check-in
+and workshop progress, then ready/collection and customer updates/recovery.
+
+Verification: 107 backend unit, 72 MongoDB integration, 4 endpoint and 10 frontend
+tests passed (193 total). Both builds, type/lint checks and Postman syntax/scope
+checks passed. The final RO suite also passed independently after index refinement.
+
 ## 14 October 2026 — Step 5, diary and workshop capacity
 
 The backend and frontend now support site-local daily appointment views, one-booking

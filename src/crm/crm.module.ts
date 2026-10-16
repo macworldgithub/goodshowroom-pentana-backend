@@ -20,6 +20,45 @@ import { DeliveriesService } from './deliveries.service.js';
 import { ServiceAppointmentsController } from './service-appointments.controller.js';
 import { ServiceDiaryController } from './service-diary.controller.js';
 import { WorkshopService } from './workshop.service.js';
+import { RepairOrdersController } from './repair-orders.controller.js';
+import { RepairOrdersService } from './repair-orders.service.js';
+import { HandoverController } from './handover.controller.js';
+import { ManagementController } from './management.controller.js';
+import { ServiceOperationsController } from './service-operations.controller.js';
+import { ActivityMirrorService } from './activity-mirror.service.js';
+import { ActivityMirrorController } from './activity-mirror.controller.js';
 
-@Module({ imports: [AuthModule, IntegrationModule], controllers: [ServiceDiaryController, ServiceAppointmentsController, DeliveriesController, ReservationsController, DealsController, AppraisalsController, StockController, SalesPipelineController, SalesLeadsController, CustomersController, CustomerJournalController, CustomerChangesController, CustomerMessagesController, TasksController, MyDayController], providers: [WorkshopService, CustomerMailTransport, ReservationsService, DeliveriesService] })
+@Module({
+  imports: [AuthModule, IntegrationModule],
+  controllers: [
+    ActivityMirrorController,
+    ServiceOperationsController,
+    HandoverController,
+    ManagementController,
+    RepairOrdersController,
+    ServiceDiaryController,
+    ServiceAppointmentsController,
+    DeliveriesController,
+    ReservationsController,
+    DealsController,
+    AppraisalsController,
+    StockController,
+    SalesPipelineController,
+    SalesLeadsController,
+    CustomersController,
+    CustomerJournalController,
+    CustomerChangesController,
+    CustomerMessagesController,
+    TasksController,
+    MyDayController,
+  ],
+  providers: [
+    ActivityMirrorService,
+    RepairOrdersService,
+    WorkshopService,
+    CustomerMailTransport,
+    ReservationsService,
+    DeliveriesService,
+  ],
+})
 export class CrmModule {}

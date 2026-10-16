@@ -279,6 +279,28 @@ export class IntegrationService {
     return this.importCustomers(request, siteId, await this.simulator.readCustomers(site.organisation_id, siteId));
   }
 
+  async reconcileConfirmedSimulated(siteId?: string) {
+    if (this.config.mode !== 'simulated') throw new ServiceUnavailableException('Reconciliation is limited to the local simulator');
+    let checked = 0; let conflicts = 0;
+    const receipts = this.mongo.simulatedRecords.aggregate<import('./contracts.js').SimulatedRecord & { commands: Command[] }>([
+      { $match: siteId ? { site_id: siteId } : {} },
+      { $sort: { 'customer.observed_at': -1, created_at: -1, id: 1 } },
+      { $group: { _id: { organisation: '$organisation_id', site: '$site_id', external: '$customer.external_id' }, latest: { $first: '$$ROOT' } } },
+      { $replaceRoot: { newRoot: '$latest' } },
+      { $lookup: { from: 'integration_commands', localField: 'command_id', foreignField: 'id', pipeline: [{ $match: { mode: 'simulated', status: 'succeeded' } }], as: 'commands' } },
+      { $match: { 'commands.0': { $exists: true } } },
+    ]);
+    for await (const receipt of receipts) {
+      try { await this.mongo.transaction(async session => { await this.project(receipt.commands[0], receipt.customer, session, true); }); checked++; }
+      catch (error) {
+        if (!(error instanceof ConflictException)) throw error;
+        conflicts++;
+        await this.mongo.transaction(async session => { await this.audit.record(session, 'system', receipt.organisation_id, receipt.site_id, 'integration.reconciliation_conflict', 'customer', receipt.commands[0].customer_id, { mode: 'simulated', reason: 'Cached customer conflicts with the last accepted simulated source observation' }); });
+      }
+    }
+    return { mode: 'simulated', checked, conflicts, reconciledAt: new Date().toISOString() };
+  }
+
   async heartbeat(request: AuthenticatedRequest, id: string, lease: string) {
     return this.mongo.transaction(async session => {
       const previous = await this.mongo.commands.findOne({ id }, { session });

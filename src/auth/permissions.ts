@@ -5,6 +5,7 @@ const salesDelivery = ['deliveries.read', 'deliveries.write'];
 export const EXTRA_PERMISSIONS = [
   'customers.view_team', 'customers.assign', 'tasks.view_team', 'tasks.assign',
   'sales.view_team', 'sales.assign_leads', 'service.view_team', 'service.assign_work',
+  'reports.read', 'reports.view_group',
 ] as const;
 export const ROLE_PERMISSIONS: Record<Role, readonly string[]> = {
   ADMIN: [...crmPermissions, ...salesDelivery, 'deliveries.prepare', 'deliveries.confirm_payment', ...EXTRA_PERMISSIONS, 'users.manage', 'audit.read', 'imports.manage', 'customers.export', 'sales.read', 'sales.write', 'sales.approve_deals', 'stock.manage', 'service.resources_manage', 'service.read', 'service.write'],
