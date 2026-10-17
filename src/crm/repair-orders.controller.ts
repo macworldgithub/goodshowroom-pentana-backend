@@ -193,6 +193,7 @@ export class RepairOrdersController {
       pagination: result.pagination,
     };
   }
+  //repair order
   @Get('commands/:id')
   @ApiQuery({ name: 'siteId', required: true })
   async command(
