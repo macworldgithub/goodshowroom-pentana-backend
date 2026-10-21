@@ -17,7 +17,7 @@ Legacy enquiry status remains new/contacted/qualified/closed. Test drive and Neg
 - `GET /api/sales/pipeline/:id/history?siteId=...&offset=0&limit=10`: paginated creation/edit/stage history, authors, timestamps, from/to stages, progress notes and revisions. Legacy history may lack stage details. Raw audit payloads and user email addresses are not exposed.
 
 Sales read/write permissions apply. Sales users see their assigned enquiries; sales.view_team permits team visibility. SERVICE alone is denied. History is checked against current enquiry ownership, site, organisation and integration mode. Reassignment can remove the previous owner's ability to read it.
-
+ 
 ## Frontend and Postman
 
 The original **Sales desk** sidebar entry opens the connected pipeline with stage count cards, search and stage filters, version-checked move dialogs and progress history. The sidebar layout is unchanged. Sales enquiries remains the create/edit location.

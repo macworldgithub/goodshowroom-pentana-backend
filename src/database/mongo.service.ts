@@ -31,6 +31,7 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get tasks() { return this.database.collection<Task>('tasks'); }
   get salesLeads() { return this.database.collection<import('./models.js').SalesLead>('sales_leads'); }
   get serviceAppointments() { return this.database.collection<import('./models.js').ServiceAppointment>('service_appointments'); }
+  get repairOrders() { return this.database.collection<any>('repair_orders'); }
   get workshopResources() { return this.database.collection<import('./models.js').WorkshopResource>('workshop_resources'); }
   get stockVehicles() { return this.database.collection<import('./models.js').StockVehicle>('stock_vehicles'); }
   get appraisals() { return this.database.collection<import('./models.js').TradeInAppraisal>('trade_in_appraisals'); }

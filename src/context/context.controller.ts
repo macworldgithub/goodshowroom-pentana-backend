@@ -40,13 +40,13 @@ export class ContextController {
       for (const site of available) {
         const siteGrants = grantsForSite(grants, site);
         if (!siteGrants.length) continue;
-        const roles = [...new Set(siteGrants.map(grant => grant.role))].sort();
+        const roles = [...new Set(siteGrants.flatMap(grant => grant.role === 'ADMIN' ? ['ADMIN', 'SALES', 'SERVICE'] : [grant.role]))].sort();
         const accessibleBrands = brands.flatMap(brand => {
           const brandGrants = grantsForBrand(grants, site, brand.id);
-          return brandGrants.length ? [{ id: brand.id, name: brand.name, roles: [...new Set(brandGrants.map(grant => grant.role))].sort(), permissions: permissionsFor(brandGrants) }] : [];
+          return brandGrants.length ? [{ id: brand.id, name: brand.name, roles: [...new Set(brandGrants.flatMap(grant => grant.role === 'ADMIN' ? ['ADMIN', 'SALES', 'SERVICE'] : [grant.role]))].sort(), permissions: permissionsFor(brandGrants) }] : [];
         });
         sites.push({ id: site.id, organisation_id: site.organisation_id, name: site.name, timezone: site.timezone,
-          role: roles.includes('ADMIN') ? 'ADMIN' : roles[0], roles, permissions: permissionsFor(siteGrants), brands: accessibleBrands });
+          role: 'ADMIN', roles, permissions: permissionsFor(siteGrants), brands: accessibleBrands });
       }
     }
     const setupAvailable = !(await this.mongo.organisations.findOne({}));
