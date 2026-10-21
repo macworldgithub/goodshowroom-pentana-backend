@@ -4,6 +4,7 @@ import { AccessService, grantsForBrand } from '../auth/access.service.js';
 import { permissionsFor } from '../auth/permissions.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-request.js';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard.js';
+import { randomUUID } from 'node:crypto';
 import { text, uuid } from '../auth/validation.js';
 import { AuditService } from '../database/audit.service.js';
 import { MongoService } from '../database/mongo.service.js';
@@ -11,6 +12,7 @@ import { publicRecord, type SalesLead } from '../database/models.js';
 import { IntegrationService } from '../integration/integration.service.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { enquiryStatus, pipelineStage, PIPELINE_STAGES, type PipelineStage } from './sales-pipeline.js';
+import { ActivityMirrorService } from './activity-mirror.service.js';
 
 @Controller('sales/pipeline')
 @ApiTags('Sales pipeline')
@@ -20,7 +22,8 @@ export class SalesPipelineController {
   constructor(@Inject(AccessService) private readonly access: AccessService,
     @Inject(MongoService) private readonly mongo: MongoService,
     @Inject(AuditService) private readonly audit: AuditService,
-    @Inject(IntegrationService) private readonly integration: IntegrationService) {}
+    @Inject(IntegrationService) private readonly integration: IntegrationService,
+    @Inject(ActivityMirrorService) private readonly mirrors: ActivityMirrorService) {}
 
   @Get()
   @ApiPagination()
@@ -78,6 +81,25 @@ export class SalesPipelineController {
       if (!updated) throw new ConflictException('Enquiry changed; refresh before moving it');
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'sales.stage_changed', 'sales_lead', id,
         { customer_id: lead.customer_id, from_stage: pipelineStage(lead), to_stage: stage, reason, version: updated.version });
+      if(stage==='order'){
+        const deal=await this.mongo.salesDeals.findOne({...this.integration.projectionFilter(),lead_id:id,organisation_id:site.organisation_id,site_id:siteId,status:'approved'},{session,sort:{updated_at:-1}});
+        if(!deal)throw new ConflictException('An approved proposal is required before the simulated order stage');
+        await this.access.requireBrand(request,siteId,deal.brand_id,'sales.write',session);
+        const existingHandover=await this.mongo.handoverItems.findOne({organisation_id:site.organisation_id,deal_id:deal.id},{session});
+        if(!existingHandover){
+          const existingPlan=await this.mongo.deliveries.findOne({organisation_id:site.organisation_id,deal_id:deal.id,status:'planned'},{session});
+          const handoverId=randomUUID(),created=new Date().toISOString();
+          const advisors=await this.mongo.memberships.find({site_id:siteId,organisation_id:site.organisation_id,role:'SERVICE',status:'active',$or:[{brand_ids:null},{brand_ids:deal.brand_id}]},{session}).sort({id:1}).toArray();
+          const owner=advisors[0]?.user_id??request.user!.id,taskId=randomUUID();
+          await this.mongo.tasks.insertOne({_id:taskId,id:taskId,organisation_id:site.organisation_id,site_id:siteId,customer_id:lead.customer_id,created_by:request.user!.id,assigned_to:owner,title:('Plan PDI and handover: '+deal.stock_label).slice(0,180),details:'Sales order received. Confirm PDI due date, accessories, delivery promise and first-service booking.',due_at:created,priority:'high',completed_at:null,created_at:created,updated_at:created,version:0,integration_mode:deal.integration_mode},{session});
+          await this.audit.record(session,request.user!.id,site.organisation_id,siteId,'task.created','task',taskId);
+          await this.mongo.handoverItems.insertOne({_id:handoverId,id:handoverId,organisation_id:site.organisation_id,site_id:siteId,brand_id:deal.brand_id,lead_id:id,deal_id:deal.id,delivery_plan_id:existingPlan?.id??'',customer_id:lead.customer_id,stock_id:deal.stock_id,vehicle_label:deal.stock_label,scheduled_delivery_at:existingPlan?.scheduled_at??'',pdi_due_date:existingPlan?new Date(Date.parse(existingPlan.scheduled_at)-2*86400000).toISOString():'',pdi_status:'pending',pdi_owner:advisors[0]?.user_id,pdi_task_id:taskId,accessories_status:'pending',first_service_status:'not_booked',status:'active',created_by:request.user!.id,created_at:created,updated_at:created,version:0,integration_mode:deal.integration_mode},{session});
+        }
+      }
+      const journalId=randomUUID(), now=new Date().toISOString();
+      await this.mongo.customerJournal.insertOne({_id:journalId,id:journalId,organisation_id:site.organisation_id,site_id:siteId,customer_id:lead.customer_id,created_by:request.user!.id,kind:'note',text:`Pipeline ${pipelineStage(lead)} to ${stage}: ${reason}`,occurred_at:now,created_at:now,integration_mode:lead.integration_mode,idempotency_key:`pipeline:${id}:${updated.version}`,request_hash:`pipeline:${id}:${updated.version}`},{session});
+      await this.mirrors.queue(session,journalId,site.organisation_id,siteId,lead.customer_id,request.user!.id,'note',{text:`Pipeline ${pipelineStage(lead)} to ${stage}: ${reason}`,occurred_at:now});
+      await this.audit.record(session,request.user!.id,site.organisation_id,siteId,'customer.note_added','customer',lead.customer_id,{journal_id:journalId});
       return { lead: this.publicLead(updated) };
     });
   }

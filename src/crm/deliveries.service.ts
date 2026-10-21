@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { ClientSession } from 'mongodb';
 import { MongoService } from '../database/mongo.service.js';
 import { AuditService } from '../database/audit.service.js';
@@ -23,6 +23,7 @@ export class DeliveriesService {
     const { site, ownOnly } = await this.scope(request, siteId, permission, session);
     const plan = await this.mongo.deliveries.findOne({ ...this.integration.projectionFilter(), id, site_id: siteId, organisation_id: site.organisation_id }, { session });
     if (!plan) throw new NotFoundException('Delivery plan is unavailable');
+    if (plan.handed_over_at && permission !== 'deliveries.read') throw new ConflictException('Completed handovers are read-only');
     await this.access.requireBrand(request, siteId, plan.brand_id, permission, session);
     const lead = await this.mongo.salesLeads.findOne({ ...this.integration.projectionFilter(), id: plan.lead_id, site_id: siteId, organisation_id: site.organisation_id,
       ...(ownOnly ? { assigned_to: request.user!.id } : {}) }, { session });
@@ -52,12 +53,14 @@ export class DeliveriesService {
     });
   }
   async record(plan: DeliveryPlan, actor: string, action: string, reason: string, session: ClientSession, metadata: Record<string, unknown> = {}) {
+    if(plan.status==='cancelled')await this.mongo.handoverItems.updateMany({delivery_plan_id:plan.id,status:'active'},{$set:{status:'cancelled',updated_at:plan.updated_at},$inc:{version:1}},{session});
     const lead = await this.mongo.salesLeads.findOneAndUpdate({ id: plan.lead_id, organisation_id: plan.organisation_id, site_id: plan.site_id },
       { $inc: { version: 1 }, $set: { updated_at: plan.updated_at } }, { session, returnDocument: 'after' });
     await this.audit.record(session, actor, plan.organisation_id, plan.site_id, action, 'sales_lead', plan.lead_id,
       { delivery_id: plan.id, deal_id: plan.deal_id, delivery_status: plan.status, delivery_scheduled_at: plan.scheduled_at, stock_brand_id: plan.brand_id, stock_label: plan.stock_label, version: lead?.version ?? null, reason, ...metadata });
   }
   async cancelDeal(organisationId: string, dealId: string, actor: string, session: ClientSession) {
+    await this.mongo.handoverItems.updateMany({organisation_id:organisationId,deal_id:dealId,status:'active'},{$set:{status:'cancelled',updated_at:new Date().toISOString()},$inc:{version:1}},{session});
     const plan = await this.mongo.deliveries.findOneAndUpdate({ organisation_id: organisationId, deal_id: dealId, status: 'planned' },
       { $set: { status: 'cancelled', updated_at: new Date().toISOString() }, $inc: { version: 1 } }, { session, returnDocument: 'after' });
     if (plan) await this.record(plan, actor, 'sales.delivery_cancelled', 'Deal cancelled', session);

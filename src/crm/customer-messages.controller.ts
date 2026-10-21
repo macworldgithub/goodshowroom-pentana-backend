@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, Inject, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, Headers, HttpCode, Inject, NotFoundException, Param, Patch, Post, Query, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { ApiBearerAuth, ApiHeader, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { AccessService } from '../auth/access.service.js';
@@ -12,7 +12,9 @@ import { IntegrationService } from '../integration/integration.service.js';
 import { ApiJsonBody } from '../api-bodies.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { CustomerMailTransport } from './customer-mail.transport.js';
-import { requireEmailConsent } from './privacy.js';
+import { requireEmailConsent, requireSmsConsent } from './privacy.js';
+import { RepairOrdersService } from './repair-orders.service.js';
+import { ActivityMirrorService } from './activity-mirror.service.js';
 
 export function publicMessage(message: CustomerMessage) {
   const { send_key: _sendKey, draft_key: _draftKey, draft_hash: _draftHash, ...rest } = publicRecord(message);
@@ -27,7 +29,9 @@ export class CustomerMessagesController {
     @Inject(MongoService) private readonly mongo: MongoService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(IntegrationService) private readonly integration: IntegrationService,
-    @Inject(CustomerMailTransport) private readonly transport: CustomerMailTransport) {}
+    @Inject(CustomerMailTransport) private readonly transport: CustomerMailTransport,
+    @Inject(RepairOrdersService) private readonly orders: RepairOrdersService,
+    @Inject(ActivityMirrorService) private readonly mirrors: ActivityMirrorService) {}
 
   @Get('messaging/status')
   status() { return this.transport.info(); }
@@ -37,22 +41,28 @@ export class CustomerMessagesController {
   @ApiJsonBody('messageDraft')
   async draft(@Req() request: AuthenticatedRequest, @Param('id') id: string, @Headers('idempotency-key') key: string | undefined, @Body() body: Record<string, unknown>) {
     uuid(id, 'customerId'); const siteId = uuid(body.siteId, 'siteId');
-    if (body.channel !== undefined && body.channel !== 'email') throw new BadRequestException('SMTP supports email only; SMS provider is not configured');
-    const subject = text(body.subject, 'subject', 1, 200);
+    if (body.channel !== undefined && !['email','sms'].includes(String(body.channel))) throw new BadRequestException('Invalid message channel');
+    const channel: 'email' | 'sms' = body.channel === 'sms' ? 'sms' : 'email';
+    const subject = channel === 'sms' ? text(body.subject ?? 'SMS Notification', 'subject', 1, 200) : text(body.subject, 'subject', 1, 200);
     if (/[\r\n]/.test(subject)) throw new BadRequestException('subject must not contain line breaks');
     const content = text(body.body, 'body', 1, 20000); const draftKey = text(key, 'Idempotency-Key', 8, 200);
-    const hash = createHash('sha256').update(JSON.stringify({ id, siteId, subject, content, mode: this.integration.config.mode })).digest('hex');
+    const roId = body.repairOrderId ? uuid(body.repairOrderId, 'repairOrderId') : null;
+    const aptId = body.appointmentId ? uuid(body.appointmentId, 'appointmentId') : null;
+    const hash = createHash('sha256').update(JSON.stringify({ id, siteId, channel, subject, content, roId, aptId, mode: this.integration.config.mode })).digest('hex');
     return this.mongo.transaction(async session => {
       const initial = await this.access.requireSite(request, siteId, 'messages.write', session);
       await this.mongo.organisations.updateOne({ id: initial.organisation_id }, { $inc: { access_revision: 1 } }, { session });
       const site = await this.access.requireSite(request, siteId, 'messages.write', session);
       const customer = await this.mongo.customers.findOne({ ...this.integration.projectionFilter(), id, organisation_id: site.organisation_id, site_id: siteId }, { session });
       if (!customer) throw new NotFoundException('Customer is unavailable');
+      if (roId) { const ro = await this.orders.order(request,siteId,roId,'service.read',session); if(ro.customer_id!==id)throw new BadRequestException('Repair order does not belong to this customer'); }
+      if (aptId) { const apt = await this.mongo.serviceAppointments.findOne({...await this.orders.scope(request,siteId,'service.read',session),id:aptId,customer_id:id},{session}); if(!apt)throw new BadRequestException('Appointment does not belong to this customer or is unavailable'); }
       const prior = await this.mongo.customerMessages.findOne({ organisation_id: site.organisation_id, created_by: request.user!.id, draft_key: draftKey }, { session });
       if (prior) { if (prior.draft_hash !== hash) throw new ConflictException('Draft key reused for different content'); return { message: publicMessage(prior), replayed: true }; }
       const messageId = randomUUID(); const now = new Date().toISOString();
       const message: CustomerMessage = { _id: messageId, id: messageId, organisation_id: site.organisation_id, site_id: siteId, customer_id: id, created_by: request.user!.id,
-        channel: 'email', subject, body: content, status: 'draft', version: 0, created_at: now, updated_at: now, draft_key: draftKey, draft_hash: hash,
+        channel, subject, body: content, status: 'draft', version: 0, created_at: now, updated_at: now, draft_key: draftKey, draft_hash: hash,
+        repair_order_id: roId, appointment_id: aptId,
         ...(customer.integration_mode ? { integration_mode: customer.integration_mode } : {}) };
       await this.mongo.customerMessages.insertOne(message, { session });
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'message.drafted', 'message', messageId);
@@ -98,6 +108,7 @@ export class CustomerMessagesController {
       }
       await this.mongo.customerMessages.replaceOne({ _id: message._id }, next, { session });
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, next.status === 'cancelled' ? 'message.cancelled' : 'message.edited', 'message', id);
+      if(['accepted','delivered','bounced','rejected'].includes(next.status))await this.mirrors.queueOutcome(session,next,request.user!.id);
       return { message: publicMessage(next) };
     });
   }
@@ -117,21 +128,34 @@ export class CustomerMessagesController {
       if (!message) throw new NotFoundException('Message is unavailable');
       if (message.created_by !== request.user!.id) await this.access.requireAdmin(request, site.organisation_id, session);
       if (message.status !== 'draft') { if (message.send_key === sendKey) return { message, replayed: true }; throw new ConflictException('Message already sent/cancelled or requires review; no automatic resend'); }
-      this.transport.assertReady();
+      if (message.channel === 'email') this.transport.assertReady();
       if (message.version !== body.version) throw new ConflictException('Draft changed; refresh before sending');
       const customer = await this.mongo.customers.findOne({ ...this.integration.projectionFilter(), id: message.customer_id, site_id: siteId, organisation_id: site.organisation_id }, { session });
       if (!customer) throw new NotFoundException('Customer is unavailable');
-      requireEmailConsent(customer);
+      if (message.channel === 'sms') {
+        if (this.integration.config.mode !== 'simulated' || process.env.MESSAGE_TRANSPORT !== 'simulated' || process.env.ALLOW_SIMULATED_INTEGRATION !== 'true' || process.env.NODE_ENV === 'production') throw new ServiceUnavailableException('SMS is available only through the local simulator; no live provider is connected');
+        requireSmsConsent(customer);
+      } else {
+        requireEmailConsent(customer);
+      }
       if (await this.mongo.commands.findOne({ mode: customer.integration_mode, customer_id: customer.id, kind: 'customer.privacy_update', status: { $in: ['queued', 'processing', 'retry_wait', 'needs_review'] } }, { session })) throw new ConflictException('Resolve pending privacy changes before sending');
+      const now = new Date().toISOString();
+
+      if (message.channel === 'sms') {
+        const next: CustomerMessage = { ...message, status: 'accepted', transport: 'simulated', to: customer.phone!, send_key: sendKey, send_started_at: now, sent_at: now, provider_id: 'simulated-sms-' + id, version: message.version + 1, updated_at: now };
+        await this.mongo.customerMessages.replaceOne({ _id: message._id }, next, { session });
+        await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'customer.message_accepted', 'customer', customer.id, { message_id: id, channel: 'sms', simulated: true });
+        await this.mirrors.queueOutcome(session,next,request.user!.id);
+        return { message: next, replayed: false };
+      }
       const mode = this.transport.info().mode;
       if (mode === 'smtp' && (customer.integration_mode === 'simulated' || this.integration.config.mode === 'simulated')) throw new ConflictException('Real SMTP cannot send simulation customer data');
-      const now = new Date().toISOString();
       const next: CustomerMessage = { ...message, status: 'sending', transport: mode as 'smtp' | 'simulated', to: customer.email!, send_key: sendKey, send_started_at: now, version: message.version + 1, updated_at: now };
       await this.mongo.customerMessages.replaceOne({ _id: message._id }, next, { session });
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'customer.message_sending', 'customer', customer.id, { message_id: id });
       return { message: next, replayed: false };
     });
-    if (claimed.replayed) return { message: publicMessage(claimed.message), replayed: true };
+    if (claimed.replayed || claimed.message.channel === 'sms') return { message: publicMessage(claimed.message), replayed: claimed.replayed };
     // External SMTP effects must never run inside a retryable database transaction.
     const m = claimed.message;
     let result: import('./customer-mail.transport.js').MailResult;
@@ -144,6 +168,7 @@ export class CustomerMessagesController {
       const next = { ...current, status, provider_id: result.providerId, sent_at: result.outcome === 'accepted' ? now : undefined, error_code: result.errorCode, updated_at: now };
       await this.mongo.customerMessages.replaceOne({ _id: current._id }, next, { session });
       await this.audit.record(session, request.user!.id, current.organisation_id, siteId, 'customer.message_' + status, 'customer', current.customer_id, { message_id: id });
+      await this.mirrors.queueOutcome(session,next,request.user!.id);
       return { message: publicMessage(next), replayed: false };
     });
   }
@@ -164,6 +189,7 @@ export class CustomerMessagesController {
       const next = { ...message, status: body.status as CustomerMessage['status'], updated_at: new Date().toISOString() };
       await this.mongo.customerMessages.replaceOne({ _id: message._id }, next, { session });
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'customer.message_' + next.status, 'customer', message.customer_id, { message_id: id, evidence });
+      if(['accepted','delivered','bounced','rejected'].includes(next.status))await this.mirrors.queueOutcome(session,next,request.user!.id);
       return { message: publicMessage(next) };
     });
   }
@@ -182,6 +208,7 @@ export class CustomerMessagesController {
       const next = { ...message, status: 'needs_review' as const, updated_at: new Date().toISOString(), error_code: 'SEND_OUTCOME_UNKNOWN' };
       await this.mongo.customerMessages.replaceOne({ _id: message._id }, next, { session });
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'customer.message_needs_review', 'customer', message.customer_id, { message_id: id, note });
+      if(['accepted','delivered','bounced','rejected'].includes(next.status))await this.mirrors.queueOutcome(session,next,request.user!.id);
       return { message: publicMessage(next) };
     });
   }
@@ -204,6 +231,7 @@ export class CustomerMessagesController {
       const next = { ...message, status: body.status as 'accepted' | 'rejected', provider_id: providerId, sent_at: body.status === 'accepted' ? now : undefined, error_code: undefined, updated_at: now };
       await this.mongo.customerMessages.replaceOne({ _id: message._id }, next, { session });
       await this.audit.record(session, request.user!.id, site.organisation_id, siteId, 'customer.message_' + next.status, 'customer', message.customer_id, { message_id: id, evidence, reconciled: true });
+      if(['accepted','delivered','bounced','rejected'].includes(next.status))await this.mirrors.queueOutcome(session,next,request.user!.id);
       return { message: publicMessage(next) };
     });
   }

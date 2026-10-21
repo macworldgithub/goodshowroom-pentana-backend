@@ -6,6 +6,7 @@ export class IntegrationWorker implements OnApplicationBootstrap, OnModuleDestro
   private timer?: ReturnType<typeof setInterval>;
   private active?: Promise<void>;
   private stopping = false;
+  private lastReconcileAt = 0;
   private readonly logger = new Logger(IntegrationWorker.name);
   constructor(@Inject(IntegrationService) private readonly integration: IntegrationService) {}
   onApplicationBootstrap() {
@@ -20,7 +21,13 @@ export class IntegrationWorker implements OnApplicationBootstrap, OnModuleDestro
   private async tick() {
     try {
       await this.integration.recoverExpired();
-      if (this.integration.config.mode === 'simulated') await this.integration.processOne();
+      if (this.integration.config.mode === 'simulated') {
+        await this.integration.processOne();
+        if (Date.now() - this.lastReconcileAt >= 3600000) {
+          await this.integration.reconcileConfirmedSimulated();
+          this.lastReconcileAt = Date.now();
+        }
+      }
     } catch { this.logger.warn('Integration worker could not complete a cycle; inspect queued commands and database availability'); }
   }
   async onModuleDestroy() {

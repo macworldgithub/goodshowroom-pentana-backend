@@ -661,6 +661,119 @@ folder('33 Service diary and capacity', [
 ], 'Run folder 32 first against disposable local fixtures. SERVICE team denial assumes no service.view_team permission; adjust expected status for a team-enabled account. Capacity blocks overlap across advisors/brands. Counts in /service/my-day are independently scoped and paginated from the task queue. No messages or source writes occur.');
 
 
+environment.values.push(...['repairOrderId', 'repairOrderVersion', 'repairOrderCommandId', 'repairOrderCreateKey'].map(key => ({ key, value: '', type: 'default', enabled: true })));
+const roGuard = guard(['siteId', 'serviceToken', 'serviceAppointmentId']) + "\nif (readVariable('integrationMode') !== 'simulated') pm.execution.skipRequest();";
+const roAdminGuard = roGuard + '\n{' + guard(['adminToken']) + '}';
+const roSaveCommand = "const c = pm.response.json().command; writeVariable('repairOrderCommandId', c.id); writeVariable('repairOrderId', c.repair_order_id);";
+const roSave = "const r = pm.response.json().repairOrder; writeVariable('repairOrderVersion', r.version); pm.test('Clearly simulated source', () => pm.expect(r.integration_mode).to.eql('simulated'));";
+const roEditPre = roGuard + "\nconst body = JSON.parse(pm.request.body.raw); body.version = Number(readVariable('repairOrderVersion')); pm.request.body.update(JSON.stringify(body)); pm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });";
+const roSimBody = { siteId: '{{siteId}}', appointmentId: '{{serviceAppointmentId}}', promisedAt: '{{workshopEndsAt}}' };
+folder('34 Repair orders', [
+  request('SERVICE book disposable RO appointment', 'POST', 'service/appointments', 'service', capacityBody, 201, appointmentSave, capacityPre + "\nif (readVariable('integrationMode') !== 'simulated') pm.execution.skipRequest();"),
+  request('SERVICE queue simulated RO from appointment', 'POST', 'service/repair-orders/simulate-from-appointment', 'service', roSimBody, 202, roSaveCommand,
+    roGuard + "\nconst key = pm.variables.replaceIn('{{$guid}}'); writeVariable('repairOrderCreateKey', key); pm.request.headers.upsert({ key: 'Idempotency-Key', value: key });"),
+  request('Identical simulation submission replays command', 'POST', 'service/repair-orders/simulate-from-appointment', 'service', roSimBody, 202,
+    "pm.test('Same command', () => pm.expect(pm.response.json().command.id).to.eql(readVariable('repairOrderCommandId')));", roGuard + "\npm.request.headers.upsert({ key: 'Idempotency-Key', value: readVariable('repairOrderCreateKey') });"),
+  request('SERVICE read durable command', 'GET', 'service/repair-orders/commands/{{repairOrderCommandId}}?siteId={{siteId}}', 'service', undefined, 200, '', roGuard),
+  request('ADMIN acknowledge simulated RO', 'POST', 'service/repair-orders/commands/{{repairOrderCommandId}}/process-simulated', 'admin', { siteId: '{{siteId}}' }, 200,
+    "pm.test('Simulation succeeded', () => pm.expect(pm.response.json().command.status).to.eql('succeeded'));", roAdminGuard),
+  request('SERVICE read linked RO detail', 'GET', 'service/repair-orders/{{repairOrderId}}?siteId={{siteId}}', 'service', undefined, 200, roSave,
+    roGuard),
+  request('SERVICE list appointment repair orders', 'GET', 'service/repair-orders?siteId={{siteId}}&appointmentId={{serviceAppointmentId}}&limit=10', 'service', undefined, 200,
+    "pm.test('Appointment link', () => pm.expect(pm.response.json().repairOrders[0].appointment_id).to.eql(readVariable('serviceAppointmentId')));", roGuard),
+  request('Duplicate simulated RO blocked', 'POST', 'service/repair-orders/simulate-from-appointment', 'service', roSimBody, 409, '', roGuard + "\npm.request.headers.upsert({ key: 'Idempotency-Key', value: pm.variables.replaceIn('{{$guid}}') });"),
+  request('Cannot jump directly to ready', 'POST', 'service/repair-orders/{{repairOrderId}}/transitions', 'service', { siteId: '{{siteId}}', version: 0, status: 'ready', note: 'Invalid direct transition' }, 409, '', roEditPre),
+  request('Cannot change financial totals', 'POST', 'service/repair-orders/{{repairOrderId}}/authority-notes', 'service', { siteId: '{{siteId}}', version: 0, note: 'Invalid financial edit', total_cents: 1 }, 400, '', roEditPre),
+  request('SERVICE queue customer authority note', 'POST', 'service/repair-orders/{{repairOrderId}}/authority-notes', 'service', { siteId: '{{siteId}}', version: 0, note: 'POSTMAN TEST customer authorised scheduled service' }, 202, roSaveCommand, roEditPre),
+  request('ADMIN acknowledge authority note', 'POST', 'service/repair-orders/commands/{{repairOrderCommandId}}/process-simulated', 'admin', { siteId: '{{siteId}}' }, 200, '', roAdminGuard),
+  request('SERVICE refresh RO version', 'GET', 'service/repair-orders/{{repairOrderId}}?siteId={{siteId}}', 'service', undefined, 200, roSave, roGuard),
+  request('SERVICE queue workshop transition', 'POST', 'service/repair-orders/{{repairOrderId}}/transitions', 'service', { siteId: '{{siteId}}', version: 0, status: 'in_workshop', note: 'POSTMAN TEST work authorised and started' }, 202, roSaveCommand, roEditPre),
+  request('ADMIN acknowledge workshop transition', 'POST', 'service/repair-orders/commands/{{repairOrderCommandId}}/process-simulated', 'admin', { siteId: '{{siteId}}' }, 200, '', roAdminGuard),
+  request('SERVICE inspect accepted status history', 'GET', 'service/repair-orders/{{repairOrderId}}?siteId={{siteId}}', 'service', undefined, 200,
+    roSave + "\npm.test('Workshop state confirmed', () => pm.expect(pm.response.json().repairOrder.status).to.eql('in_workshop'));", roGuard),
+  request('SERVICE inspect RO exception queue', 'GET', 'service/repair-orders/my-day?siteId={{siteId}}&view=own&limit=10', 'service', undefined, 200, '', roGuard),
+  request('SERVICE inspect customer RO timeline', 'GET', 'customers/{{serviceCustomerId}}/activity?siteId={{siteId}}&limit=100', 'service', undefined, 200,
+    "pm.test('RO event on shared thread', () => pm.expect(pm.response.json().activities.some(e => e.repairOrderId === readVariable('repairOrderId'))).to.eql(true));", roGuard),
+  request('SALES cannot read service repair orders', 'GET', 'service/repair-orders?siteId={{siteId}}', 'sales', undefined, 403, '', roGuard + '\n{' + guard(['salesToken']) + '}'),
+  request('SERVICE inspect recent source commands', 'GET', 'service/repair-orders/commands?siteId={{siteId}}&limit=10', 'service', undefined, 200, '', roGuard),
+  request('Cancel disposable RO appointment', 'PATCH', 'service/appointments/{{serviceAppointmentId}}', 'service', { siteId: '{{siteId}}', version: 0, status: 'cancelled', outcomeNote: 'RO local verification completed; fixture retained' }, 200, appointmentSave, appointmentPre + "\nif (readVariable('integrationMode') !== 'simulated') pm.execution.skipRequest();"),
+], 'Run folders 32 and 33 first with disposable local fixtures. Simulation only: no Pentana RO creation, invoicing, payments or customer messages. Uses the existing configured simulator worker or explicit ADMIN processing. Commands and test RO history remain for inspection; the test booking is cancelled at the end.');
+
+environment.values.push(...['runWorkshopDayTests', 'runScopeContextTests'].map(key=>({key,value:'false',type:'default',enabled:true})));
+environment.values.push(...['handoverId','handoverVersion','firstServiceStartsAt','firstServiceEndsAt','scopeMessageId','scopeMessageVersion','scopeMessageSendKey','customerVehicleId'].map(key=>({key,value:'',type:'default',enabled:true})));
+const dayGuard=roGuard+"\nif (readVariable('runWorkshopDayTests') !== 'true') pm.execution.skipRequest();";
+const dayEdit=roEditPre+"\nif (readVariable('runWorkshopDayTests') !== 'true') pm.execution.skipRequest();";
+const dayAdmin=roAdminGuard+"\nif (readVariable('runWorkshopDayTests') !== 'true') pm.execution.skipRequest();";
+const workflowRequests=[request('Verify a started appointment fixture before check-in','GET','service/appointments/{{serviceAppointmentId}}?siteId={{siteId}}','service',undefined,200,
+  "const a=pm.response.json().appointment; pm.test('Appointment is started and not cancelled',()=>pm.expect(Date.parse(a.starts_at)<=Date.now()&&!['cancelled','no_show'].includes(a.status)).to.eql(true));",dayGuard),
+  request('Read current repair-order version','GET','service/repair-orders/{{repairOrderId}}?siteId={{siteId}}','service',undefined,200,roSave,dayGuard)];
+for(const [name,action,body] of [
+  ['Check in vehicle','check-in',{mileageIn:42000,fuelLevel:'half',signatureConfirmed:true,notes:'POSTMAN SIM vehicle arrived'}],
+  ['Request authority','request-authority',{description:'POSTMAN SIM source-listed service operation'}],
+  ['Record customer authority','respond-authority',{approved:true,responseNote:'POSTMAN SIM customer approved by phone'}],
+  ['Record waiting parts','progress',{stage:'waiting_parts',technicianNotes:'POSTMAN SIM parts pending'}],
+  ['Record road test and readiness','progress',{stage:'completed',roadTestStatus:'passed',markReady:true}],
+]){
+  workflowRequests.push(request(name,'POST',`service/repair-orders/{{repairOrderId}}/actions/${action}`,'service',{siteId:'{{siteId}}',version:0,...body},202,roSaveCommand,dayEdit));
+  workflowRequests.push(request('ADMIN accept '+action,'POST','service/repair-orders/commands/{{repairOrderCommandId}}/process-simulated','admin',{siteId:'{{siteId}}'},200,'',dayAdmin));
+  workflowRequests.push(request('Refresh after '+action,'GET','service/repair-orders/{{repairOrderId}}?siteId={{siteId}}','service',undefined,200,roSave,dayGuard));
+}
+workflowRequests.push(
+  request('Draft RO-linked collection update only','POST','customers/{{serviceCustomerId}}/messages','service',{siteId:'{{siteId}}',channel:'email',subject:'SIM vehicle ready',body:'This is a simulated ready-for-collection update. Please review before sending.',repairOrderId:'{{repairOrderId}}',appointmentId:'{{serviceAppointmentId}}'},201,'',dayEdit),
+  request('Read recovery items','GET','service/recovery?siteId={{siteId}}&limit=20','service',undefined,200,'',dayGuard),
+  request('Create RO follow-up in My Day','POST','service/repair-orders/{{repairOrderId}}/tasks','service',{siteId:'{{siteId}}',title:'POSTMAN SIM collection follow-up',dueAt:'{{workshopEndsAt}}'},201,'',dayGuard),
+  request('Collection cannot edit payment context','POST','service/repair-orders/{{repairOrderId}}/actions/collect','service',{siteId:'{{siteId}}',version:0,keysReturned:true,paymentStatus:'paid'},400,'',dayEdit),
+  request('Queue collection without invoicing','POST','service/repair-orders/{{repairOrderId}}/actions/collect','service',{siteId:'{{siteId}}',version:0,keysReturned:true,loanReturned:true,notes:'POSTMAN SIM customer collected vehicle'},202,roSaveCommand,dayEdit),
+  request('ADMIN accept collection','POST','service/repair-orders/commands/{{repairOrderCommandId}}/process-simulated','admin',{siteId:'{{siteId}}'},200,'',dayAdmin),
+  request('Verify collection has no invoice effect','GET','service/repair-orders/{{repairOrderId}}?siteId={{siteId}}','service',undefined,200,roSave+"\npm.test('Collection recorded without invoicing',()=>{pm.expect(r.collection.collected_at).to.be.a('string');pm.expect(r.invoiced_at).to.eql(null);});",dayGuard),
+);
+folder('35 Simulated workshop day',workflowRequests,'Optional: enable runWorkshopDayTests only with a disposable started, non-cancelled appointment and its uncollected RO. The booking cancelled at the end of folders 33/34 is unsuitable. Use the UI to prepare a new booking that has started and its simulated RO, then set the saved IDs. No real messages, invoicing or Pentana writes.');
+const scopeGuard=guard(['siteId','serviceToken'])+"\nif (readVariable('runScopeContextTests') !== 'true' || readVariable('integrationMode') !== 'simulated') pm.execution.skipRequest();";
+folder('36 Handover and operational visibility',[
+ request('SERVICE read handover lane','GET','service/handover-lane?siteId={{siteId}}&limit=10','service',undefined,200,"const h=pm.response.json().handovers[0];if(h){writeVariable('handoverId',h.id);writeVariable('handoverVersion',h.version);}",scopeGuard),
+ request('SERVICE read handover risks','GET','service/handover-lane?siteId={{siteId}}&riskOnly=true&limit=10','service',undefined,200,'',scopeGuard),
+ request('ADMIN operational counts','GET','management/operational-summary?siteId={{siteId}}','admin',undefined,200,"pm.test('Operational reporting excludes financial totals',()=>pm.expect(pm.response.json().metrics.openDeals).not.to.have.property('valueCents'));",scopeGuard),
+ request('SERVICE cannot read administrator group reports','GET','management/operational-summary?siteId={{siteId}}','service',undefined,403,'',scopeGuard),
+ request('ADMIN export retained audit page','GET','management/audit-export?siteId={{siteId}}&limit=10','admin',undefined,200,"pm.test('Retention minimum',()=>pm.expect(pm.response.json().retention.minimumYears).to.be.at.least(7));",scopeGuard),
+ request('SERVICE local next-action rules','GET','crm/ai-assist/suggested-actions?siteId={{siteId}}&customerId={{serviceCustomerId}}','service',undefined,200,'',scopeGuard),
+ request('Prepare human-reviewed template without sending','POST','crm/ai-assist/draft-reply','service',{siteId:'{{siteId}}',customerId:'{{serviceCustomerId}}'},200,"pm.test('Provider availability is honest',()=>pm.expect(pm.response.json().aiAvailable).to.eql(false));",scopeGuard),
+ request('SERVICE read customer vehicles','GET','customers/{{serviceCustomerId}}/vehicles?siteId={{siteId}}&limit=10','service',undefined,200,'',scopeGuard),
+ request('SERVICE read household/company links','GET','customers/{{serviceCustomerId}}/relationships?siteId={{siteId}}&limit=10','service',undefined,200,'',scopeGuard),
+ request('SERVICE ordered service timeline','GET','customers/{{serviceCustomerId}}/activity?siteId={{siteId}}&desk=service&order=asc&limit=20','service',undefined,200,'',scopeGuard),
+ request('Invalid timeline filter rejected','GET','customers/{{serviceCustomerId}}/activity?siteId={{siteId}}&desk=invalid','service',undefined,400,'',scopeGuard),
+ request('SERVICE weekly diary by authorised advisor','GET','service/diary?siteId={{siteId}}&range=week&view=own&limit=20','service',undefined,200,'',scopeGuard),
+ request('Incoming stock projection','GET','sales/stock?siteId={{siteId}}&status=incoming&limit=10','admin',undefined,200,'',scopeGuard),
+], 'Optional local read/template checks: runScopeContextTests=true and existing disposable fixtures. Handover mutation/first-service/final-handover coverage is exercised by the temporary-MongoDB integration suite and available in the UI. No live provider is used.');
+
+environment.values.push({key:'runScopeMutationTests',value:'false',type:'default',enabled:true});
+const mutationGuard=scopeGuard+"\nif(readVariable('runScopeMutationTests')!=='true')pm.execution.skipRequest();";
+const handoverPre=mutationGuard+"\nconst body=JSON.parse(pm.request.body.raw);body.version=Number(readVariable('handoverVersion'));pm.request.body.update(JSON.stringify(body));pm.request.headers.upsert({key:'Idempotency-Key',value:pm.variables.replaceIn('{{$guid}}')});";
+const handoverSave="writeVariable('handoverVersion',pm.response.json().handover.version);";
+folder('37 Optional local scope mutations',[
+ request('Update PDI on disposable handover','POST','service/handover-lane/{{handoverId}}/pdi','service',{siteId:'{{siteId}}',version:0,status:'completed',notes:'POSTMAN SIM inspection completed'},200,handoverSave,handoverPre),
+ request('Prepare accessories','POST','service/handover-lane/{{handoverId}}/accessories','service',{siteId:'{{siteId}}',version:0,status:'ready',notes:'POSTMAN SIM accessories prepared'},200,handoverSave,handoverPre),
+ request('Record customer contact preference','POST','service/handover-lane/{{handoverId}}/preferences','admin',{siteId:'{{siteId}}',version:0,preferred_channel:'email',notes:'POSTMAN SIM preferred contact'},200,handoverSave,handoverPre),
+ request('Book first service using workshop resource','POST','service/handover-lane/{{handoverId}}/first-service-booking','service',{siteId:'{{siteId}}',version:0,startsAt:'{{firstServiceStartsAt}}',endsAt:'{{firstServiceEndsAt}}',resourceId:'{{workshopResourceId}}',notes:'POSTMAN SIM first inspection'},200,handoverSave,handoverPre),
+ request('Reject unsupported handover financial edit','POST','service/handover-lane/{{handoverId}}/preferences','admin',{siteId:'{{siteId}}',version:0,preferred_channel:'email',total_cents:1},400,'',handoverPre),
+ request('ADMIN reconcile accepted simulated customer receipts','POST','management/simulated-reconcile','admin',{siteId:'{{siteId}}'},200,'',mutationGuard),
+ request('ADMIN read deployment and provider readiness','GET','management/readiness?siteId={{siteId}}','admin',undefined,200,'',scopeGuard),
+ request('Read service recovery resolution history','GET','service/recovery/history?siteId={{siteId}}&limit=10','service',undefined,200,'',scopeGuard),
+ request('ADMIN create simulated customer vehicle','POST','customers/{{serviceCustomerId}}/vehicles','admin',{siteId:'{{siteId}}',make:'SIMULATED',model:'Test vehicle',year:2026,registration:'SIM-TEST',vin:'SIMULATEDVIN000001',ownership:'owned'},201,"writeVariable('customerVehicleId',pm.response.json().vehicle.id);",mutationGuard+"\npm.request.headers.upsert({key:'Idempotency-Key',value:pm.variables.replaceIn('{{$guid}}')});"),
+ request('Draft simulated SMS without sending','POST','customers/{{serviceCustomerId}}/messages','service',{siteId:'{{siteId}}',channel:'sms',body:'POSTMAN SIM update for human review'},201,"writeVariable('scopeMessageId',pm.response.json().message.id);writeVariable('scopeMessageVersion',pm.response.json().message.version);",mutationGuard+"\npm.request.headers.upsert({key:'Idempotency-Key',value:pm.variables.replaceIn('{{$guid}}')});"),
+], 'Explicit opt-in: runScopeContextTests=true and runScopeMutationTests=true, disposable local/simulated fixtures only. Select a current handover from folder 36 linked to an approved delivery plan; set first-service timestamps inside workshop hours. The UI provides final handover after all delivery checks. SMS is drafted only; sending remains a separate human action with consent enforcement.');
+
+environment.values.push(...['activityMirrorId','recoveryKind','recoveryEntityId','recoveryFingerprint','simulatedAdvisorId'].map(key=>({key,value:'',type:'default',enabled:true})));
+folder('38 Activity mirroring and operational follow-ups',[
+ request('Read simulated activity mirror states','GET','customers/{{serviceCustomerId}}/activity-mirrors?siteId={{siteId}}&limit=10','service',undefined,200,"const c=pm.response.json().commands[0];if(c)writeVariable('activityMirrorId',c.id);",scopeGuard),
+ request('ADMIN process one simulated activity mirror','POST','management/activity-mirrors/{{activityMirrorId}}/process','admin',{siteId:'{{siteId}}'},200,'',mutationGuard),
+ request('ADMIN reviewed retry of unsuccessful mirror','POST','management/activity-mirrors/{{activityMirrorId}}/retry','admin',{siteId:'{{siteId}}',note:'POSTMAN SIM confirmed not applied in the simulator',confirmedNotApplied:true},202,'',mutationGuard),
+ request('Read recovery candidate fingerprint','GET','service/recovery?siteId={{siteId}}&limit=10','service',undefined,200,"const r=pm.response.json().items[0];if(r){writeVariable('recoveryKind',r.kind);writeVariable('recoveryEntityId',r.entityId);writeVariable('recoveryFingerprint',r.fingerprint);}",scopeGuard),
+ request('Resolve candidate with a follow-up task','POST','service/recovery/{{recoveryKind}}/{{recoveryEntityId}}/resolve','service',{siteId:'{{siteId}}',fingerprint:'{{recoveryFingerprint}}',note:'POSTMAN SIM recovery contact logged',followUpAt:'{{workshopEndsAt}}'},201,'',mutationGuard),
+ request('Queue promised completion change','POST','service/repair-orders/{{repairOrderId}}/actions/promise','service',{siteId:'{{siteId}}',version:0,promisedAt:'{{workshopEndsAt}}',note:'POSTMAN SIM revised customer promise'},202,roSaveCommand,dayEdit),
+ request('Queue supported simulated operation with authority','POST','service/repair-orders/{{repairOrderId}}/actions/add-operation','service',{siteId:'{{siteId}}',version:0,description:'POSTMAN SIM authorised source operation',note:'Source operation reference SIM-OP'},202,roSaveCommand,dayEdit),
+ request('ADMIN queue advisor reassignment','POST','service/repair-orders/{{repairOrderId}}/actions/reassign','admin',{siteId:'{{siteId}}',version:0,assignedTo:'{{simulatedAdvisorId}}',reason:'POSTMAN SIM controller assignment'},202,roSaveCommand,dayEdit),
+], 'Optional examples for disposable uncollected records only. Each queued change must be acknowledged and its current version refreshed before the next example. Mirror retry requires an unsuccessful/review state with verified non-application; do not retry an already successful mirror. These are separately selectable requests, not a sequential full collection run.');
+
 const collection = {
   info: { _postman_id: randomUUID(), name: 'Good Showroom — Supabase Auth and MongoDB CRM',
     schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',

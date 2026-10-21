@@ -21,6 +21,13 @@ import { ServiceAppointmentsController } from './service-appointments.controller
 import { ServiceDiaryController } from './service-diary.controller.js';
 import { ReportsController } from './reports.controller.js';
 import { WorkshopService } from './workshop.service.js';
+import { RepairOrdersController } from './repair-orders.controller.js';
+import { RepairOrdersService } from './repair-orders.service.js';
+import { HandoverController } from './handover.controller.js';
+import { ManagementController } from './management.controller.js';
+import { ServiceOperationsController } from './service-operations.controller.js';
+import { ActivityMirrorService } from './activity-mirror.service.js';
+import { ActivityMirrorController } from './activity-mirror.controller.js';
 
 @Module({ imports: [AuthModule, IntegrationModule], controllers: [ReportsController, ServiceDiaryController, ServiceAppointmentsController, DeliveriesController, ReservationsController, DealsController, AppraisalsController, StockController, SalesPipelineController, SalesLeadsController, CustomersController, CustomerJournalController, CustomerChangesController, CustomerMessagesController, TasksController, MyDayController], providers: [WorkshopService, CustomerMailTransport, ReservationsService, DeliveriesService] })
 export class CrmModule {}

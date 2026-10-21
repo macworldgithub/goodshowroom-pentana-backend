@@ -28,10 +28,10 @@ export class DeliveriesController {
   @Get()
   @ApiPagination()
   @ApiQuery({ name: 'siteId', required: true })
-  @ApiQuery({ name: 'status', required: false, enum: ['planned', 'cancelled'] })
+  @ApiQuery({ name: 'status', required: false, enum: ['planned', 'cancelled', 'handed_over'] })
   @ApiQuery({ name: 'dealId', required: false })
   async list(@Req() request: AuthenticatedRequest, @Query('siteId') siteId: string, @Query('status') status?: string, @Query('offset') offset?: string, @Query('limit') limit?: string, @Query('dealId') dealId?: string) {
-    uuid(siteId, 'siteId'); const page = pagination(offset, limit); if (status !== undefined && !['planned', 'cancelled'].includes(status)) throw new BadRequestException('Invalid delivery status');
+    uuid(siteId, 'siteId'); const page = pagination(offset, limit); if (status !== undefined && !['planned', 'cancelled', 'handed_over'].includes(status)) throw new BadRequestException('Invalid delivery status');
     if (dealId !== undefined) uuid(dealId, 'dealId');
     return this.mongo.transaction(async session => {
       const { site, ownOnly } = await this.deliveries.scope(request, siteId, 'deliveries.read', session); const grants = await this.access.memberships(request, session);
@@ -74,7 +74,42 @@ export class DeliveriesController {
       const id = randomUUID(); const now = new Date().toISOString();
       const plan: DeliveryPlan = { _id: id, id, organisation_id: site.organisation_id, site_id: siteId, lead_id: leadId, customer_id: lead.customer_id, deal_id: dealId, deal_version: deal.version, stock_id: stock.id, stock_label: deal.stock_label, brand_id: deal.brand_id,
         scheduled_at: date, notes, status: 'planned', checklist: emptyChecklist(), created_by: request.user!.id, updated_at: now, created_at: now, version: 0, create_key: createKey, create_hash: hash, ...(deal.integration_mode ? { integration_mode: deal.integration_mode } : {}) };
-      await this.mongo.deliveries.insertOne(plan, { session }); await this.deliveries.record(plan, request.user!.id, 'sales.delivery_planned', notes, session); return { delivery: await this.deliveries.view(request, plan, session) };
+      await this.mongo.deliveries.insertOne(plan, { session });
+
+      const handoverId = randomUUID();
+      const pdiDueDate = new Date(Date.parse(date) - 2 * 86400000).toISOString();
+      const handoverItem: import('../database/models.js').HandoverItem = {
+        _id: handoverId,
+        id: handoverId,
+        organisation_id: site.organisation_id,
+        site_id: siteId,
+        brand_id: deal.brand_id,
+        deal_id: dealId,
+        lead_id: leadId,
+        delivery_plan_id: id,
+        customer_id: lead.customer_id,
+        stock_id: stock.id,
+        vehicle_label: deal.stock_label,
+        scheduled_delivery_at: date,
+        pdi_due_date: pdiDueDate,
+        integration_mode: deal.integration_mode, version: 0,
+        pdi_status: 'pending',
+        pdi_appointment_id: null,
+        accessories_status: 'pending',
+        accessories_notes: null,
+        first_service_status: 'not_booked',
+        first_service_appointment_id: null,
+        notes,
+        status: 'active',
+        created_by: request.user!.id,
+        updated_at: now,
+        created_at: now,
+      };
+      const priorHandover=await this.mongo.handoverItems.findOne({organisation_id:site.organisation_id,deal_id:dealId},{session});
+      if(priorHandover){await this.mongo.handoverItems.updateOne({id:priorHandover.id},{$set:{delivery_plan_id:id,lead_id:leadId,scheduled_delivery_at:date,pdi_due_date:priorHandover.pdi_due_date||pdiDueDate,updated_at:now},$inc:{version:1}},{session});}
+      else await this.mongo.handoverItems.insertOne(handoverItem, { session });
+
+      await this.deliveries.record(plan, request.user!.id, 'sales.delivery_planned', notes, session); return { delivery: await this.deliveries.view(request, plan, session) };
     });
   }
   @Patch(':id')
@@ -87,7 +122,7 @@ export class DeliveriesController {
       if (!deal || deal.status !== 'approved') throw new ConflictException('A current approved deal is required');
       await this.mongo.salesDeals.updateOne({ _id: deal._id }, { $inc: { reservation_revision: 1 } }, { session });
       const row = await this.mongo.deliveries.findOneAndUpdate({ _id: plan._id, version: currentVersion }, { $set: { scheduled_at: date, notes, status: 'planned', updated_at: new Date().toISOString(), ...(plan.status === 'cancelled' ? { checklist: emptyChecklist() } : {}) }, $inc: { version: 1 } }, { session, returnDocument: 'after' });
-      if (!row) throw new ConflictException('Delivery changed; refresh before rescheduling'); await this.deliveries.record(row, request.user!.id, plan.status === 'cancelled' ? 'sales.delivery_reopened' : 'sales.delivery_rescheduled', notes, session); return { delivery: await this.deliveries.view(request, row, session) };
+      if (!row) throw new ConflictException('Delivery changed; refresh before rescheduling'); await this.mongo.handoverItems.updateOne({delivery_plan_id:id},{$set:{scheduled_delivery_at:date,status:'active',updated_at:row.updated_at},$inc:{version:1}},{session}); await this.deliveries.record(row, request.user!.id, plan.status === 'cancelled' ? 'sales.delivery_reopened' : 'sales.delivery_rescheduled', notes, session); return { delivery: await this.deliveries.view(request, row, session) };
     });
   }
   @Patch(':id/checklist')

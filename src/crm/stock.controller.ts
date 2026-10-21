@@ -13,7 +13,7 @@ import { IntegrationService } from '../integration/integration.service.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
 import { pipelineStage } from './sales-pipeline.js';
 
-const states = ['available', 'sold', 'unavailable'];
+const states = ['available', 'incoming', 'sold', 'unavailable'];
 function integer(value: unknown, name: string, min: number, max: number) {
   if (!Number.isInteger(value) || Number(value) < min || Number(value) > max) throw new BadRequestException(`${name} must be an integer between ${min} and ${max}`);
   return Number(value);

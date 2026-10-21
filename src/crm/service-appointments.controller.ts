@@ -88,7 +88,8 @@ export class ServiceAppointmentsController {
     }).sort({ starts_at: 1, id: 1 }).skip(page.offset).limit(page.limit + 1).toArray();
     const result = pageResult(rows, page);
     return { appointments: result.rows.map(row => this.publicAppointment(row)), pagination: result.pagination,
-      visibility: await this.access.hasSitePermission(request, siteId, 'service.view_team') ? 'team' : 'own' };
+      visibility: await this.access.hasSitePermission(request, siteId, 'service.view_team') ? 'team' : 'own',
+      repairOrderSimulationEnabled: this.integration.config.mode === 'simulated' && this.integration.config.writesEnabled };
   }
   @Get(':id')
   @ApiQuery({ name: 'siteId', required: true })
