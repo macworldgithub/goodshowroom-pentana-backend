@@ -303,45 +303,56 @@ async function seedAllData() {
 
   // 8. REPAIR ORDERS
   console.log("\n--- Repair Orders ---");
-  const existingROs = await db.collection("repair_orders").countDocuments({ organisation_id: orgId });
-  if (existingROs < 10) {
-    const ros = [];
-    for (const site of pilotSites) {
-      const siteCusts = customersBySite.get(site.id) || [];
-      const siteBrandId = site.brand_ids?.[0] || brands[0]?.id;
-      for (let i = 0; i < 8; i++) {
-        const cust = pick(siteCusts); if (!cust) continue;
-        const ownedVeh = pick(OWNED_VEHICLES); const status = pick(RO_STATUSES);
-        const ops = pickN(RO_OPERATIONS, 1 + Math.floor(Math.random()*3));
-        const roId = uuid(); const openedAt = daysAgo(Math.floor(Math.random()*5));
-        ros.push({ _id: roId, id: roId, organisation_id: orgId, site_id: site.id,
-          brand_id: siteBrandId, customer_id: cust.id,
-          created_by: adminUserId, assigned_to: pick(userIds),
-          appointment_id: roId,
-          ro_number: "RO-" + Math.floor(100000 + Math.random()*900000),
-          vehicle_description: ownedVeh.year + " " + ownedVeh.make + " " + ownedVeh.model,
-          registration: ownedVeh.rego, vin: null,
-          odometer_in: Math.floor(30000 + Math.random()*100000),
-          operations: ops.map(op => ({ description: op, status: pick(["pending","in_progress","complete"]), technician: pick(["Tech A","Tech B","Tech C"]) })),
-          status, customer_authority: status === "arrived" ? null : "Verbal authority given",
-          waiting_authority: status === "arrived" && Math.random() > 0.5,
-          loan_car: Math.random() > 0.7 ? "LC-" + Math.floor(10 + Math.random()*90) : null,
-          opened_at: openedAt, promised_at: daysFromNow(Math.floor(Math.random()*3)),
-          notes: pick(["Customer mentioned rattling noise on cold start","Pre-booked for recall campaign","Customer authorised all work verbally",""]),
-          version: 0, source: "simulated", integration_mode: "simulated",
-          create_key: "seed-ro-" + roId, create_hash: hashObj({ siteId: site.id, custId: cust.id, i }),
-          created_at: openedAt, updated_at: daysAgo(Math.floor(Math.random()*2)) });
-      }
+  await db.collection("repair_orders").deleteMany({ organisation_id: orgId });
+  const ros = [];
+  const roStatusList = ["waiting_authority", "in_workshop", "waiting_parts", "ready", "waiting_authority", "in_workshop"];
+  for (const site of pilotSites) {
+    const siteCusts = customersBySite.get(site.id) || [];
+    const siteBrandId = site.brand_ids?.[0] || brands[0]?.id;
+    for (let i = 0; i < 8; i++) {
+      const cust = pick(siteCusts); if (!cust) continue;
+      const ownedVeh = pick(OWNED_VEHICLES);
+      const status = roStatusList[i % roStatusList.length];
+      const ops = pickN(RO_OPERATIONS, 1 + Math.floor(Math.random()*3));
+      const roId = uuid();
+      const openedAt = daysAgo(Math.floor(Math.random()*5));
+      const roNum = String(100000 + Math.floor(Math.random()*900000));
+      const vehicleDesc = `${ownedVeh.year} ${ownedVeh.make} ${ownedVeh.model} (${ownedVeh.rego})`;
+      const opsSummary = ops.join(", ");
+      ros.push({
+        _id: roId,
+        id: roId,
+        organisation_id: orgId,
+        site_id: site.id,
+        brand_id: siteBrandId,
+        customer_id: cust.id,
+        appointment_id: roId,
+        assigned_to: pick(userIds),
+        vehicle: vehicleDesc,
+        vehicle_external_id: null,
+        number: roNum,
+        external_id: `SIM-RO-${site.id.slice(0, 4)}-${roNum}`,
+        integration_mode: "simulated",
+        source_status: status === "ready" ? "WIP Completed" : status === "waiting_authority" ? "Estimate Awaiting Auth" : "In Progress",
+        status,
+        operations_summary: opsSummary,
+        promised_at: daysFromNow(Math.floor(Math.random()*3)),
+        updated_at: daysAgo(Math.floor(Math.random()*2)),
+        created_at: openedAt,
+        version: 0,
+        authority_notes: status === "waiting_authority" ? [{ text: "Customer phone query on brake fluid replacement", recorded_at: openedAt, recorded_by: adminUserId }] : [],
+        status_history: [{ from: "waiting_authority", to: status, note: "Initial check-in", recorded_at: openedAt, recorded_by: adminUserId }],
+        ready_at: status === "ready" ? nowStr() : null,
+        invoiced_at: null,
+        collection: null,
+        created_by: adminUserId
+      });
     }
-    try {
-      await db.collection("repair_orders").insertMany(ros, { ordered: false });
-      console.log("Inserted", ros.length, "repair orders");
-    } catch (e) {
-      if (e.code === 11000) {
-        console.log("Inserted", e.result?.insertedCount || 0, "repair orders (some skipped - duplicate key)");
-      } else { throw e; }
-    }
-  } else { console.log("Skipping - already exists:", existingROs); }
+  }
+  if (ros.length > 0) {
+    await db.collection("repair_orders").insertMany(ros, { ordered: false });
+    console.log("Inserted", ros.length, "repair orders");
+  }
 
   // 9. TASKS
   console.log("\n--- Tasks ---");

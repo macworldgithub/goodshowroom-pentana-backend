@@ -68,10 +68,11 @@ async function seedHandoverLane() {
   const memberships = await db.collection("memberships").find({ organisation_id: orgId }).toArray();
   const adminUserId = memberships.find(m => m.role === "ADMIN")?.user_id || memberships[0]?.user_id || uuid();
 
-  // Clear existing delivery plans and active stock reservations to reseed cleanly
+  // Clear existing delivery plans, handover items, and active stock reservations to reseed cleanly
   await db.collection("delivery_plans").deleteMany({ organisation_id: orgId });
+  await db.collection("handover_items").deleteMany({ organisation_id: orgId });
   await db.collection("stock_reservations").deleteMany({ organisation_id: orgId });
-  console.log("Cleared existing delivery_plans and stock_reservations.");
+  console.log("Cleared existing delivery_plans, handover_items, and stock_reservations.");
 
   // Get deals that are approved or submitted and convert them to approved so they qualify for deliveries
   const candidateDeals = await db.collection("sales_deals").find({
@@ -85,6 +86,7 @@ async function seedHandoverLane() {
   let count = 0;
   const newDeliveryPlans = [];
   const newReservations = [];
+  const newHandoverItems = [];
 
   for (const deal of candidateDeals) {
     // Ensure the stock vehicle exists and is available
@@ -181,6 +183,35 @@ async function seedHandoverLane() {
     };
 
     newDeliveryPlans.push(deliveryPlan);
+
+    const handoverId = uuid();
+    const pdiStatus = sitePlansCount % 3 === 0 ? "completed" : sitePlansCount % 3 === 1 ? "in_progress" : "pending";
+    const firstServiceStatus = sitePlansCount % 2 === 0 ? "booked" : "not_booked";
+    const handoverItem = {
+      _id: handoverId,
+      id: handoverId,
+      organisation_id: orgId,
+      site_id: deal.site_id,
+      brand_id: deal.brand_id,
+      deal_id: deal.id,
+      delivery_plan_id: dpId,
+      customer_id: deal.customer_id,
+      stock_id: deal.stock_id,
+      vehicle_label: deliveryPlan.stock_label,
+      scheduled_delivery_at: scheduledAt,
+      pdi_due_date: daysFromNow(Math.max(0, scheduledDays - 2)),
+      pdi_status: pdiStatus,
+      accessories_status: pdiStatus === "completed" ? "ready" : "pending",
+      first_service_status: firstServiceStatus,
+      status: "active",
+      created_by: adminUserId,
+      updated_at: nowStr(),
+      created_at: daysAgo(3),
+      version: 0,
+      integration_mode: deal.integration_mode || "simulated"
+    };
+    newHandoverItems.push(handoverItem);
+
     count++;
   }
 
@@ -192,6 +223,11 @@ async function seedHandoverLane() {
   if (newDeliveryPlans.length > 0) {
     await db.collection("delivery_plans").insertMany(newDeliveryPlans);
     console.log(`Inserted ${newDeliveryPlans.length} delivery_plans.`);
+  }
+
+  if (newHandoverItems.length > 0) {
+    await db.collection("handover_items").insertMany(newHandoverItems);
+    console.log(`Inserted ${newHandoverItems.length} handover_items.`);
   }
 
   // Verify counts

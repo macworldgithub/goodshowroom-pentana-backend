@@ -1,0 +1,384 @@
+╔══════════════════════════════════════════════════════════════╗
+║       GOOD SHOWROOM DATABASE AUDIT (Read-Only)              ║
+╚══════════════════════════════════════════════════════════════╝
+
+── ALL COLLECTIONS ──
+  activity_mirror_commands                    0
+  audit_events                               96
+  brands                                     46
+  customer_journal                          203
+  customer_messages                           1
+  customer_relationships                      0
+  customer_vehicles                         249
+  customers                                 433
+  delivery_plans                             30
+  handover_items                             30
+  integration_attempts                        5
+  integration_commands                        5
+  loan_cars                                   8
+  memberships                               102
+  organisations                               1
+  repair_order_commands                       0
+  repair_orders                              64
+  sales_deals                                64
+  sales_leads                               242
+  service_appointments                      208
+  service_recovery_resolutions                0
+  simulated_source_records                    5
+  simulator_behaviors                         0
+  sites                                      26
+  staff_invitations                           0
+  stock_reservations                         30
+  stock_vehicles                          10466
+  system_state                                3
+  tasks                                     124
+  trade_in_appraisals                        58
+  users                                       8
+  workshop_resources                         24
+
+── ORGANISATION ──
+  Good Showroom Test (id: 4deafbac-a8c8-44c1-ade4-cce58c80ad23)
+
+── SITES ──
+  "Pilot Site" (id: 0d1a7a53-eae7-44ba-913d-11da9c43582a)
+  "01| Booran Cheltenham" (id: 6035611f-6e3c-476c-870f-8ac8b0e12cee)
+  "03| Booran Dandenong" (id: 5f808a11-7606-4257-ad3d-5a792a8a04a3)
+  "06| Cranbourne Holden" (id: 38c1068b-912c-4ecf-837a-c6b92a0d834d)
+  "190| ACCTG HIST Berwick MG & Hyundai" (id: 3db0dca5-c480-4328-8361-b1848c862899)
+  "20| Cranbourne Hyundai" (id: 4c5c3e6e-3a72-4550-adbf-d1f28301c0fd)
+  "21| Berwick Hyundai" (id: 07479e01-6c62-466f-b342-1cfd683c7333)
+  "30| Bayside European" (id: 52940803-2f73-4a9a-b4b0-f4f9a1444086)
+  "31| Bayside Skoda" (id: 9cca9fa4-04a3-4dff-83f5-ac15f509e2d9)
+  "32| Bayside European Frankston" (id: 011f6cf8-0881-483d-ac6b-999e5af6aeaa)
+  "40| South Morang Hyundai" (id: 7a74d6bf-3000-4ce9-b68b-a2c8493b1b2c)
+  "50| Dandenong Mitsubishi & Hyundai" (id: c214c31e-c34c-4bfa-bc87-6ae608641d4a)
+  "51| Cranbourne MG/MITS/KIA" (id: e0d89f1b-d1a4-4d9f-baec-a68b841fea51)
+  "52| Dandenong NI & KI" (id: 1f2cb2e6-ef83-4b64-8c1c-ff2187363d63)
+  "60| Beachside VW" (id: e2a9caba-91d8-452b-9158-6dcce2f61cf5)
+  "61| Peninsula Skoda" (id: f40692ab-ee36-4a3b-bc1d-b0c51a736cd4)
+  "70| South Morang KIA" (id: 3cd40b9e-8edd-4d4d-9b37-63f8dcc77fea)
+  "71| Service History St01" (id: 1f212b98-9c11-4646-952e-0b35bf4897be)
+  "72| Service History St02" (id: e945ec38-0fbb-46a4-aba9-1b99e4c9e2d5)
+  "73| Service History St03" (id: 25e97e9b-3f9a-4e21-8481-b9d686dae88b)
+  "78| SVC HIST Berwick MG & Hyundai" (id: 01324b74-e4d0-4a1e-8b27-0f8801429d8d)
+  "80| Training - St30" (id: fa399a6e-00f6-49ea-b35c-0f03ce12abbe)
+  "81| Training - St31" (id: ca3af33c-8614-4931-bfdf-2edda87e9263)
+  "82| Training - St60" (id: 0db74ae9-37b3-46d6-bd5e-1976eef3e653)
+  "90| Berwick MG & Hyundai" (id: 71ddf8f2-d4b3-4a3e-878f-8dfb18566475)
+  "99| Booran Corporate" (id: c669097f-b8e1-4382-bd5a-dd31b686eb7d)
+
+── CUSTOMERS (433) ──
+  By source:
+    simulated: 403
+    pentana: 30
+  By integration_mode:
+    simulated: 403
+    scraping: 30
+
+── CUSTOMER_VEHICLES (249) ──
+  By integration_mode:
+    simulated: 249
+  By source:
+    simulated: 249
+
+── SALES_LEADS (242) ──
+  By integration_mode:
+    simulated: 242
+  By pipeline_stage:
+    test_drive: 41
+    new: 36
+    negotiation: 34
+    qualified: 34
+    contacted: 33
+    lost: 32
+    won: 30
+    null/undefined: 2
+  By source:
+    Phone Enquiry: 29
+    Google Ad: 29
+    AutoTrader: 24
+    Service Customer: 24
+    Walk-in: 23
+    Referral: 23
+    Facebook Ad: 20
+    Trade-in Enquiry: 20
+    Website Enquiry: 19
+    Return Customer: 17
+    carsales.com.au: 14
+
+── SALES_DEALS (64) ──
+  By integration_mode:
+    simulated: 64
+  By status:
+    draft: 34
+    approved: 30
+  By source:
+    local: 64
+
+── SERVICE_APPOINTMENTS (208) ──
+  By integration_mode:
+    simulated: 208
+  By status:
+    confirmed: 85
+    booked: 74
+    ready: 17
+    in_progress: 9
+    arrived: 9
+    collected: 8
+    invoiced: 6
+
+── REPAIR_ORDERS (64) ──
+  By integration_mode:
+    simulated: 64
+  By status:
+    in_workshop: 24
+    waiting_authority: 24
+    waiting_parts: 8
+    ready: 8
+
+── TASKS (124) ──
+  By integration_mode:
+    simulated: 124
+  By kind:
+    follow_up: 75
+    call: 49
+
+── CUSTOMER_JOURNAL (203) ──
+  By integration_mode:
+    simulated: 203
+  By kind:
+    call: 127
+    note: 76
+
+── CUSTOMER_MESSAGES (1) ──
+  By integration_mode:
+    simulated: 1
+  By status:
+    draft: 1
+  By channel:
+    email: 1
+
+── STOCK_VEHICLES (10466) ──
+  By integration_mode:
+    simulated: 10466
+  By status:
+    available: 9737
+    unavailable: 570
+    sold: 159
+  By source:
+    simulated: 10466
+
+── DELIVERY_PLANS (30) ──
+  By integration_mode:
+    simulated: 30
+  By status:
+    planned: 30
+
+── STOCK_RESERVATIONS (30) ──
+  By integration_mode:
+    simulated: 30
+  By status:
+    active: 30
+
+── TRADE_IN_APPRAISALS (58) ──
+  By integration_mode:
+    simulated: 58
+  By status:
+    valued: 44
+    draft: 14
+
+── HANDOVER_ITEMS (30) ──
+  By integration_mode:
+    simulated: 30
+  By status:
+    active: 30
+
+── WORKSHOP_RESOURCES (24) ──
+  By active:
+    true: 24
+
+── LOAN_CARS (8) ──
+  By status:
+    available: 6
+    in_use: 2
+
+── CUSTOMER EXTERNAL IDS ──
+  With external_ids.pentana: 30
+  With external_ids.simulated: 403
+  With integration_external_id: 33
+
+── SAMPLE CUSTOMERS (5) ──
+  Postman SALES 1791806024329 | source=simulated | int_mode=simulated | ext_ids={"simulated":"sim-a3db5ddb-5202-4a26-a12d-dda61b5ca238"} | email=postman-sales-1791806024329@example.test | phone=null
+  Abdul Ahad | source=simulated | int_mode=simulated | ext_ids={"simulated":"sim-98d40a18-7eec-49e9-95a9-3f05602c4cb6"} | email=abdulahadnauman10@gmail.com | phone=123154
+  Frontend Verification | source=simulated | int_mode=simulated | ext_ids={"simulated":"sim-d48e14a9-aac4-4b40-94b9-2102d696c4d4"} | email=frontend-verification@example.test | phone=0400000000
+    | source=pentana | int_mode=scraping | ext_ids={"pentana":"50871"} | email=null | phone=(07) 4052 4333
+    | source=pentana | int_mode=scraping | ext_ids={"pentana":"58197"} | email=tullamarine@rentabomb.om.au | phone=(0419) 575 670
+
+── SAMPLE CUSTOMER JOURNAL (3) ──
+  kind=note | text=Frontend integration verification: this internal note is stored in the shared cu | int_mode=simulated | customer_id=0bcca039-5b88-4b8d-a9aa-131237825d18
+  kind=call | text=Simulated call log for frontend verification; no real customer call was placed. | int_mode=simulated | customer_id=0bcca039-5b88-4b8d-a9aa-131237825d18
+  kind=call | text=Follow up after CSI survey - customer rated 9/10, mentioned quick service. | int_mode=simulated | customer_id=1dd9afdc-9d76-49a5-8d80-fe9f6dd4474c
+
+── CSV/IMPORT MARKERS ──
+  CSV customers: 0
+  Pentana customers: 30
+  Manual customers: 0
+  Simulated customers: 403
+
+
+╔══════════════════════════════════════════════════════════════╗
+║       FLWup DATABASE AUDIT (Read-Only)                      ║
+╚══════════════════════════════════════════════════════════════╝
+
+── ALL COLLECTIONS ──
+  app_migrations                              1
+  appointments                                0
+  catalogs                                    1
+  customer_messages                           5
+  dashboards                                  3
+  feedlogs                                    1
+  leads                                    4906
+  login_attempts                              0
+  message_media                               3
+  message_media_chunks                        3
+  organizations                               1
+  reports                                    14
+  rooftops                                    4
+  sessions                                    0
+  users                                       2
+
+── COLLECTION SCHEMAS (sample documents) ──
+
+  ┌─ app_migrations (1 docs) ─
+  │ Fields (4): _id, collections, completedAt, locationAccount
+  └─
+
+  ┌─ catalogs (1 docs) ─
+  │ Fields (7): _id, catalog_id, __v, createdAt, data, updatedAt, updated_at
+  └─
+
+  ┌─ customer_messages (5 docs) ─
+  │ Fields (15): _id, lead_id, dealership_name, body, attachments, phone, author, user_id, created_at, status, fingerprint, provider, provider_message_id, error, provider_checked_at
+  │ Sample values:
+  │   phone: +61499918523
+  │   status: delivered
+  │   created_at: 2026-10-19T18:01:06.705Z
+  └─
+
+  ┌─ dashboards (3 docs) ─
+  │ Fields (7): _id, key, __v, createdAt, data, updatedAt, updated_at
+  └─
+
+  ┌─ feedlogs (1 docs) ─
+  │ Fields (15): _id, feedType, scheduledWindow, status, totalPentanaRows, totalWebsiteRows, reconciledCount, quarantinedCount, newArrivalsCount, soldExitsCount, priceChangesCount, durationMs, notes, createdAt, updatedAt
+  └─
+
+  ┌─ leads (4906 docs) ─
+  │ Fields (47): _id, deal_id, dealership_id, dealership_name, dealer_code, owner_name, source, source_campaign, external_lead_id, customer_name, customer_phone, customer_email, vehicle_make, vehicle_model, created_at, first_contact_at, minutes_to_first_contact, first_touch_at, minutes_to_first_touch, first_followup_due_at, had_contact_opportunity, follow_ups_sent, first_reply_at, status, sold_at, lost_reason, days_to_sold, pentana_id, store_code, ai_status, ai_schedule_preference, ai_queued_messages, diary_entries, test_drive, trade_in, loan_car, post_sales_followup, videos_sent, __v, createdAt, updatedAt, channels, last_activity_at, score, score_reasons, tier, vehicle_year
+  │ Sample values:
+  │   status: following_up
+  │   source: FLWUP Dashboard
+  │   createdAt: "2026-10-14T05:31:50.397Z"
+  │   created_at: 2026-10-13T04:50:42.18246+00:00
+  │   updatedAt: "2026-10-20T05:20:15.400Z"
+  └─
+
+  ┌─ message_media (3 docs) ─
+  │ Fields (13): _id, name, content_type, size, lead_id, dealership_name, author, status, share_token, staging_key, storage_key, created_at, storage_backend
+  └─
+
+  ┌─ message_media_chunks (3 docs) ─
+  │ Fields (5): _id, index, size, hash, data
+  └─
+
+  ┌─ organizations (1 docs) ─
+  │ Fields (12): _id, org_id, __v, createdAt, current_user, dealer_group_code, meta, name, short_name, theme, updatedAt, updated_at
+  │ Sample values:
+  │   name: Boran Motors Group
+  │   createdAt: "2026-10-14T05:28:39.123Z"
+  │   updatedAt: "2026-10-19T07:18:35.450Z"
+  │   updated_at: "2026-10-19T07:18:35.450Z"
+  └─
+
+  ┌─ reports (14 docs) ─
+  │ Fields (8): _id, preset, title, data, updated_at, __v, createdAt, updatedAt
+  └─
+
+  ┌─ rooftops (4 docs) ─
+  │ Fields (12): _id, id, name, active, tier, has_post_sale_template, dealer_code, timezone, brand, __v, createdAt, updatedAt
+  └─
+
+  ┌─ users (2 docs) ─
+  │ Fields (8): _id, active, createdAt, email, name, passwordHash, role, site
+  │ Sample values:
+  │   name: Omnisuite Super Admin
+  │   email: devs@omnisuiteai.com
+  │   createdAt: "2026-10-18T06:37:57.987Z"
+  └─
+
+── LEADS BREAKDOWNS ──
+  By status:
+    sold: 1940
+    following_up: 1278
+    lost: 1261
+    returned: 327
+    new_lead: 100
+  By source:
+    FLWUP Dashboard: 4905
+    Mobile Message SMS test: 1
+
+
+╔══════════════════════════════════════════════════════════════╗
+║       COMPARISON SUMMARY                                    ║
+╚══════════════════════════════════════════════════════════════╝
+
+── Good Showroom Collections ──
+  activity_mirror_commands                    0
+  audit_events                               96
+  brands                                     46
+  customer_journal                          203
+  customer_messages                           1
+  customer_relationships                      0
+  customer_vehicles                         249
+  customers                                 433
+  delivery_plans                             30
+  handover_items                             30
+  integration_attempts                        5
+  integration_commands                        5
+  loan_cars                                   8
+  memberships                               102
+  organisations                               1
+  repair_order_commands                       0
+  repair_orders                              64
+  sales_deals                                64
+  sales_leads                               242
+  service_appointments                      208
+  service_recovery_resolutions                0
+  simulated_source_records                    5
+  simulator_behaviors                         0
+  sites                                      26
+  staff_invitations                           0
+  stock_reservations                         30
+  stock_vehicles                          10466
+  system_state                                3
+  tasks                                     124
+  trade_in_appraisals                        58
+  users                                       8
+  workshop_resources                         24
+
+── FLWup Collections ──
+  app_migrations                              1
+  appointments                                0
+  catalogs                                    1
+  customer_messages                           5
+  dashboards                                  3
+  feedlogs                                    1
+  leads                                    4906
+  login_attempts                              0
+  message_media                               3
+  message_media_chunks                        3
+  organizations                               1
+  reports                                    14
+  rooftops                                    4
+  sessions                                    0
+  users                                       2
