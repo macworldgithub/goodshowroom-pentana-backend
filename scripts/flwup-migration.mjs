@@ -115,6 +115,8 @@ async function runMigration() {
   };
 
   const customerClusters = [];
+
+  
   const phoneToCluster = new Map();
   const emailToCluster = new Map();
   const pentanaToCluster = new Map();
