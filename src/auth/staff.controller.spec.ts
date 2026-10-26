@@ -14,7 +14,7 @@ describe('Staff scope enforcement', () => {
   let mongo: any;
   beforeEach(() => {
     mongo = { transaction: vi.fn(async op => op({})), organisations: { updateOne: vi.fn().mockResolvedValue({ matchedCount: 1 }) }, sites: { findOne: vi.fn().mockResolvedValue({ id: siteId }) }, memberships: { findOne: vi.fn(), replaceOne: vi.fn(), updateOne: vi.fn() }, invitations: { findOneAndUpdate: vi.fn(), insertOne: vi.fn(), updateMany: vi.fn() } };
-    controller = new StaffController({ requireAdmin: vi.fn() } as unknown as AccessService, mongo as MongoService, { record: vi.fn() } as unknown as AuditService);
+    controller = new StaffController({ requireAdmin: vi.fn() } as unknown as AccessService, mongo as MongoService, { record: vi.fn() } as unknown as AuditService, { sendInvitationEmail: vi.fn().mockResolvedValue({ sent: true }) } as any);
   });
   it.each([[['SALES']], [['SERVICE']], [['ADMIN', 'SALES']]])('rejects unscoped roles %j', requestedRoles => {
     expect(() => validateRoleScope(requestedRoles, null)).toThrow(BadRequestException);

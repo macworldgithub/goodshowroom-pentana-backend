@@ -1,6 +1,6 @@
 import { ConflictException, HttpException, Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { MongoClient, MongoServerError, type ClientSession, type Db } from 'mongodb';
-import type { AuditEvent, Brand, Customer, CustomerJournal, CustomerMessage, Invitation, Membership, Organisation, Site, Task } from './models.js';
+import type { AuditEvent, AuthSession, Brand, Customer, CustomerJournal, CustomerMessage, DbUser, Invitation, Membership, Organisation, PasswordReset, Site, Task } from './models.js';
 import type { Attempt, Command, SimulatedRecord, SimulatorBehavior } from '../integration/contracts.js';
 
 @Injectable()
@@ -53,7 +53,9 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
   get recoveryResolutions() { return this.database.collection<import('./models.js').RecoveryResolution>('service_recovery_resolutions'); }
   get activityMirrors() { return this.database.collection<import('./models.js').ActivityMirrorCommand>('activity_mirror_commands'); }
   get simulatedActivities() { return this.database.collection<import('./models.js').ActivityMirrorCommand & { external_id:string }>('simulated_source_activities'); }
-  get users() { return this.database.collection<{ _id: string; email: string | null; full_name?: string; updated_at: string }>('users'); }
+  get users() { return this.database.collection<DbUser>('users'); }
+  get authSessions() { return this.database.collection<AuthSession>('auth_sessions'); }
+  get passwordResets() { return this.database.collection<PasswordReset>('password_resets'); }
   get systemState() { return this.database.collection<{ _id: string; organisation_id?: string; email?: string; user_id?: string; created_at?: string; revision?: number }>('system_state'); }
 
   private async ensureIndexes() {
@@ -124,6 +126,11 @@ export class MongoService implements OnModuleInit, OnModuleDestroy {
     await this.loanCars.createIndex({ organisation_id: 1, site_id: 1, status: 1, id: 1 });
     await this.handoverItems.createIndex({ organisation_id: 1, site_id: 1, status: 1, scheduled_delivery_at: 1, id: 1 });
     await this.handoverItems.createIndex({ organisation_id: 1, deal_id: 1 }, { unique: true });
+    await this.users.createIndex({ email: 1 }, { unique: true });
+    await this.authSessions.createIndex({ refresh_token_hash: 1 }, { unique: true });
+    await this.authSessions.createIndex({ user_id: 1, expires_at: 1 });
+    await this.passwordResets.createIndex({ token_hash: 1 }, { unique: true });
+    await this.passwordResets.createIndex({ email: 1, expires_at: 1 });
   }
 
   async transaction<T>(operation: (session: ClientSession) => Promise<T>): Promise<T> {

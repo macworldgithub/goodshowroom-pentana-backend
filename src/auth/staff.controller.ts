@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import type { ClientSession } from 'mongodb';
 import { AccessService } from './access.service.js';
 import { SupabaseAuthGuard } from './supabase-auth.guard.js';
-import { createAdminSupabaseClient } from './user-supabase.js';
+import { AuthMailService } from './auth-mail.service.js';
+import { generateSecureToken, hashToken } from './crypto.util.js';
 import { brandScope, roles, text, uuid, validateRoleScope } from './validation.js';
 import { EXTRA_PERMISSIONS, type Role } from './permissions.js';
 import type { AuthenticatedRequest } from './authenticated-request.js';
@@ -13,7 +14,6 @@ import { publicRecord } from '../database/models.js';
 import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ApiJsonBody } from '../api-bodies.js';
 import { ApiPagination, pagination, pageResult } from '../pagination.js';
-import { invitationDeliveryFailure } from './invitation-delivery.js';
 
 @Controller()
 @ApiTags('Staff and invitations')
@@ -22,7 +22,8 @@ import { invitationDeliveryFailure } from './invitation-delivery.js';
 export class StaffController {
   constructor(@Inject(AccessService) private readonly access: AccessService,
     @Inject(MongoService) private readonly mongo: MongoService,
-    @Inject(AuditService) private readonly audit: AuditService) {}
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(AuthMailService) private readonly mail: AuthMailService) {}
 
   private async lockAdmin(request: AuthenticatedRequest, organisationId: string, session: ClientSession) {
     // Serialize access changes per dealership, including last-administrator protection.
@@ -147,18 +148,24 @@ export class StaffController {
     await this.access.requireAdmin(request, organisationId);
     const invitation = await this.mongo.invitations.findOne({ id, organisation_id: organisationId, status: 'pending', expires_at: { $gt: new Date().toISOString() } });
     if (!invitation) throw new BadRequestException('Invitation is unavailable or expired');
-    const redirectTo = process.env.AUTH_INVITE_REDIRECT_URL;
-    if (!redirectTo) throw new BadRequestException('Configure AUTH_INVITE_REDIRECT_URL before sending invitations');
-    // Supabase is used only for identity/email, never for CRM persistence.
-    const { error: sendError } = await createAdminSupabaseClient().auth.admin.inviteUserByEmail(invitation.email, { redirectTo });
-    const failure = sendError ? invitationDeliveryFailure(sendError) : undefined;
+
+    const rawToken = generateSecureToken(32);
+    const tokenHash = hashToken(rawToken);
+
+    let siteName: string | undefined;
+    if (invitation.site_id) {
+      const site = await this.mongo.sites.findOne({ id: invitation.site_id });
+      siteName = site?.name;
+    }
+
+    const { sent, message } = await this.mail.sendInvitationEmail(invitation.email, id, rawToken, siteName);
+
     await this.mongo.transaction(async session => {
-      await this.mongo.invitations.updateOne({ id, status: 'pending' }, { $set: { delivery_status: sendError ? 'failed' : 'sent' } }, { session });
+      await this.mongo.invitations.updateOne({ id, status: 'pending' }, { $set: { delivery_status: sent ? 'sent' : 'failed', token_hash: tokenHash } }, { session });
       await this.audit.record(session, request.user!.id, organisationId, invitation.site_id, 'staff.invitation_delivery', 'invitation', id,
-        { sent: !sendError, ...(failure ? { error_code: failure.errorCode, provider_status: failure.providerStatus } : {}) });
+        { sent, message });
     });
-    return { invitationId: id, sent: !sendError,
-      ...(failure ?? { message: 'Invitation email submitted' }) };
+    return { invitationId: id, sent, message: message || 'Invitation email sent' };
   }
 
   @Post('admin/invitations/:id/revoke')

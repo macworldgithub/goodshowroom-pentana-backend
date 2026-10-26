@@ -89,6 +89,12 @@ const bodies: Record<string, SchemaObject> = {
     dueAt: { type: 'string', format: 'date-time', example: '2026-10-09T09:00:00+05:00' },
     priority: { type: 'string', enum: ['low', 'normal', 'high'], default: 'normal' },
   } },
+  login: { type: 'object', required: ['email', 'password'], properties: { email, password } },
+  refresh: { type: 'object', required: ['refreshToken'], properties: { refreshToken: { type: 'string', example: 'session-refresh-token' } } },
+  logout: { type: 'object', properties: { refreshToken: { type: 'string' } } },
+  forgotPassword: { type: 'object', required: ['email'], properties: { email } },
+  resetPassword: { type: 'object', required: ['token', 'password'], properties: { token: { type: 'string' }, password } },
+  acceptInvitation: { type: 'object', required: ['invitationId', 'token', 'password'], properties: { invitationId: identifier, token: { type: 'string' }, password, fullName: { type: 'string' } } },
 };
 
 export const ApiJsonBody = (name: keyof typeof bodies) => ApiBody({ schema: bodies[name] });

@@ -1,8 +1,8 @@
-import { createClient } from '@supabase/supabase-js';
-
-export function createAdminSupabaseClient() {
-  const url = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) throw new Error('Configure SUPABASE_URL and a server-only Supabase secret key for user administration');
-  return createClient(url, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
+/**
+ * Supabase admin client has been removed.
+ * User provisioning is now handled directly via MongoDB and the native auth system.
+ * This file is kept as a stub to prevent compilation errors if old test/spec files reference it.
+ */
+export function createAdminSupabaseClient(): never {
+  throw new Error('Supabase admin client has been removed. Use the native auth system (UserProvisioningService, AuthService).');
 }

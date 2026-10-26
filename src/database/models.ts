@@ -89,6 +89,7 @@ export type Invitation = RecordBase & {
   status: 'pending' | 'accepted' | 'revoked'; delivery_status: 'not_sent' | 'sent' | 'failed';
   invited_by: string; expires_at: string; accepted_by?: string; accepted_at?: string;
   brand_ids?: string[] | null;
+  token_hash?: string;
 };
 export type Customer = RecordBase & {
   privacy?: CustomerPrivacy;
@@ -239,6 +240,34 @@ export type HandoverItem = RecordBase & {
   first_service_appointment_id?: string | null;
   notes?: string | null; status: 'active' | 'completed' | 'cancelled';
   created_by: string; updated_at: string;
+};
+
+export type DbUser = RecordBase & {
+  email: string | null;
+  full_name?: string;
+  password_hash?: string;
+  password_salt?: string;
+  email_confirmed_at?: string | null;
+  failed_login_attempts?: number;
+  locked_until?: string | null;
+  updated_at: string;
+};
+
+export type AuthSession = RecordBase & {
+  user_id: string;
+  refresh_token_hash: string;
+  user_agent?: string | null;
+  ip_address?: string | null;
+  expires_at: string;
+  revoked_at?: string | null;
+};
+
+export type PasswordReset = RecordBase & {
+  user_id: string;
+  email: string;
+  token_hash: string;
+  expires_at: string;
+  used_at?: string | null;
 };
 
 export function publicRecord<T extends { _id: string }>(record: T): Omit<T, '_id'> {
