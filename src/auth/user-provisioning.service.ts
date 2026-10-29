@@ -80,6 +80,62 @@ export class UserProvisioningService {
     };
   }
 
+  async createAdmin(body: CreateUserBody) {
+    requireSetupKey(body.setupKey);
+    const organisationId = uuid(body.organisationId, 'organisationId');
+    const identity = this.identity(body);
+
+    const org = await this.mongo.organisations.findOne({ id: organisationId });
+    if (!org) throw new BadRequestException('Organisation not found. Check your organisationId.');
+
+    const existingUser = await this.mongo.users.findOne({ email: identity.email });
+    if (existingUser) {
+      throw new ConflictException('An account with this email address already exists.');
+    }
+
+    const { hash, salt } = await hashPassword(identity.password);
+    const userId = randomUUID();
+    const membershipId = randomUUID();
+    const now = new Date().toISOString();
+
+    return this.mongo.transaction(async (session) => {
+      await this.mongo.organisations.updateOne({ id: organisationId }, { $inc: { access_revision: 1 } }, { session });
+
+      const userRecord: DbUser = {
+        _id: userId,
+        id: userId,
+        email: identity.email,
+        full_name: identity.fullName,
+        password_hash: hash,
+        password_salt: salt,
+        email_confirmed_at: now,
+        created_at: now,
+        updated_at: now,
+      };
+      await this.mongo.users.insertOne(userRecord, { session });
+
+      const membership: Membership = {
+        _id: membershipId,
+        id: membershipId,
+        organisation_id: organisationId,
+        site_id: null,
+        user_id: userId,
+        role: 'ADMIN',
+        status: 'active',
+        extra_permissions: [],
+        brand_ids: null,
+        created_at: now,
+      };
+      await this.mongo.memberships.insertOne(membership, { session });
+
+      return {
+        user: { id: userId, email: identity.email, fullName: identity.fullName },
+        membership: { id: membershipId, role: 'ADMIN', organisationId },
+        created: true,
+      };
+    });
+  }
+
   async staff(request: AuthenticatedRequest, body: CreateUserBody) {
     const organisationId = uuid(body.organisationId, 'organisationId');
     await this.access.requireAdmin(request, organisationId);
@@ -127,7 +183,7 @@ export class UserProvisioningService {
       const memberships: Membership[] = [];
       for (const role of requestedRoles) {
         const id = randomUUID();
-        const membership: Membership = {
+        const membership: Membership = {   
           _id: id,
           id,
           organisation_id: organisationId,

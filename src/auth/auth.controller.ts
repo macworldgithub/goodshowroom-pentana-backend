@@ -2,12 +2,16 @@ import { Body, Controller, Inject, Post, Req } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { AuthService } from './auth.service.js';
+import { UserProvisioningService } from './user-provisioning.service.js';
 import { ApiJsonBody } from '../api-bodies.js';
 
 @Controller('auth')
 @ApiTags('Authentication')
 export class AuthController {
-  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
+  constructor(
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(UserProvisioningService) private readonly provisioning: UserProvisioningService,
+  ) {}
 
   @Post('login')
   @ApiOperation({ summary: 'Sign in with email and password' })
@@ -58,5 +62,15 @@ export class AuthController {
       body.password,
       body.fullName,
     );
+  }
+
+  @Post('create-admin')
+  @ApiOperation({
+    summary: 'Create a new ADMIN user (recovery endpoint)',
+    description: 'Creates a new admin user using the setup key. No login required. Use this to recover access or add additional admins.',
+  })
+  @ApiJsonBody('createAdmin')
+  createAdmin(@Body() body: { email?: unknown; password?: unknown; fullName?: unknown; organisationId?: unknown; setupKey?: unknown }) {
+    return this.provisioning.createAdmin(body);
   }
 }

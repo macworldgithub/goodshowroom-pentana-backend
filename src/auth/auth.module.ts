@@ -19,6 +19,6 @@ import { AuthMailService } from './auth-mail.service.js';
     AccessService,
     UserProvisioningService,
   ],
-  exports: [JwtAuthService, AuthMailService, AuthService, JwtAuthGuard, AccessService],
+  exports: [JwtAuthService, AuthMailService, AuthService, JwtAuthGuard, AccessService, UserProvisioningService],
 })
 export class AuthModule {}

@@ -95,6 +95,13 @@ const bodies: Record<string, SchemaObject> = {
   forgotPassword: { type: 'object', required: ['email'], properties: { email } },
   resetPassword: { type: 'object', required: ['token', 'password'], properties: { token: { type: 'string' }, password } },
   acceptInvitation: { type: 'object', required: ['invitationId', 'token', 'password'], properties: { invitationId: identifier, token: { type: 'string' }, password, fullName: { type: 'string' } } },
+  createAdmin: { type: 'object', required: ['email', 'password', 'organisationId', 'setupKey'], description: 'Create a new ADMIN user without needing to be logged in. Secured by the setup key.', properties: {
+    email: { ...email, example: 'newadmin@example.com' },
+    password,
+    fullName: { type: 'string', example: 'New Admin', minLength: 1, maxLength: 120 },
+    organisationId: { ...identifier, description: 'Your organisation ID. Get it from GET /api/context or MongoDB.' },
+    setupKey,
+  } },
 };
 
 export const ApiJsonBody = (name: keyof typeof bodies) => ApiBody({ schema: bodies[name] });

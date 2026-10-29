@@ -19,7 +19,7 @@ describe('Staff scope enforcement', () => {
   it.each([[['SALES']], [['SERVICE']], [['ADMIN', 'SALES']]])('rejects unscoped roles %j', requestedRoles => {
     expect(() => validateRoleScope(requestedRoles, null)).toThrow(BadRequestException);
   });
-  it('accepts scoped staff and organisation administrators', () => {
+  it('accepts scoped staff and organisation a67890-09 89dministrators', () => {
     expect(() => validateRoleScope(['SALES', 'SERVICE'], siteId)).not.toThrow();
     expect(() => validateRoleScope(['ADMIN'], null)).not.toThrow();
   });
